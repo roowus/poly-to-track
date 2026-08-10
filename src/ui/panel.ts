@@ -60,6 +60,8 @@ export function createPanel(api: TspmlApi): Panel {
     'background:rgba(18,20,28,0.95)', 'color:#e8e8f0', 'border:1px solid #3a3f55',
     'border-radius:10px', 'font:13px/1.45 system-ui,sans-serif',
     'box-shadow:0 8px 32px rgba(0,0,0,0.5)', 'display:none', 'user-select:none',
+    // Must fit short screens: cap to the viewport and let the body scroll.
+    'max-height:calc(100vh - 88px)', 'flex-direction:column',
   ].join(';');
 
   // ---------- header (drag handle) ----------
@@ -73,7 +75,7 @@ export function createPanel(api: TspmlApi): Panel {
   makeDraggable(root, header);
 
   const body = document.createElement('div');
-  body.style.cssText = 'padding:12px;display:flex;flex-direction:column;gap:10px';
+  body.style.cssText = 'padding:12px;display:flex;flex-direction:column;gap:10px;overflow-y:auto;min-height:0';
   root.appendChild(body);
 
   // ---------- file row ----------
@@ -274,7 +276,7 @@ export function createPanel(api: TspmlApi): Panel {
 
   return {
     toggle() {
-      root.style.display = root.style.display === 'none' ? 'block' : 'none';
+      root.style.display = root.style.display === 'none' ? 'flex' : 'none';
     },
     dispose() {
       clearTimeout(revoxTimer);

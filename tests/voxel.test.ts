@@ -34,6 +34,14 @@ describe('voxelize', () => {
     expect(solid.filledCount).toBe(64);
   });
 
+  it('stays watertight at odd resolutions (boundary-plane float error)', () => {
+    // cell = 1/24 is not exactly representable; faces on cell-boundary
+    // planes must still register or the solid fill leaks and empties the cube.
+    const mesh = parseObj(CUBE_OBJ);
+    const solid = voxelize(mesh, { resolution: 24, solid: true });
+    expect(solid.filledCount).toBe(24 * 24 * 24);
+  });
+
   it('a single triangle marks only cells it touches', () => {
     const mesh = parseObj('v 0 0 0\nv 4 0 0\nv 0 4 0\nf 1 2 3');
     const grid = voxelize(mesh, { resolution: 4, solid: false });

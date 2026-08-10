@@ -38,7 +38,11 @@ export function voxelize(mesh: TriangleMesh, opts: VoxelizeOptions): VoxelGrid {
   const nz = Math.max(1, Math.ceil(size[2]! / cell - 1e-9));
   const cells = new Uint8Array(nx * ny * nz);
 
-  const half = cell / 2;
+  // Epsilon-padded: model faces often lie EXACTLY on cell-boundary planes
+  // (any axis-aligned geometry does), where float error can flip the SAT's
+  // touching-counts-as-overlap equality and punch pinholes in the shell —
+  // which the solid flood fill then leaks through.
+  const half = (cell / 2) * (1 + 1e-6);
   const p = mesh.positions;
   const v0 = [0, 0, 0], v1 = [0, 0, 0], v2 = [0, 0, 0];
 
