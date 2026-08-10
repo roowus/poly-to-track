@@ -57,9 +57,12 @@ Verified against the game's own codec chunks (webcrack'd bundle, chunks
 - Grid unit = 1 part cell; `partSize = 5` world units. A `Block` (id 29) is a
   full 1×1×1 cell cube. `HalfBlock` (53) and `QuarterBlock` (54) are thinner
   slabs. `Plane` (25) is a paper-thin floor.
-- Voxel building uses **`Block` (29)** as the 1:1 LEGO brick. That's the whole
-  voxel alphabet for v1 — sloped/corner block variants (68–73, 151–158, 174+)
-  are a later "smart smoothing" upgrade, and colors already give visual detail.
+- Voxel building uses **`Block` (29)** as the 1:1 LEGO brick, with **shape
+  fitting** (v0.2, `src/voxel/fit.ts`): convex plan corners become
+  `HalfBlock` (53), wall tips `QuarterBlock` (54), and single-cell steps get a
+  `BlockSlopeUp` (85) ramp — Minecraft-stairs smoothing. The voxel grid is
+  **anisotropic** (`ySubdivisions`, default 4 y-cells per block) because a
+  Block is 20×5×20 world units — without it builds came out flattened.
 - A playable track needs a **Start (5)** + **Finish (6)**; we drop a small
   Plane pad with Start and Finish next to the build so the track loads and you
   can drive around/on the model. Start parts carry `startOrder u32`,
@@ -103,23 +106,50 @@ Toggle with keybind. Panel (right side, draggable):
 - stats: voxel count, code size
 - "Build track" → name field → register; success/failure surfaced inline
 
-## Restrictions found in TSPML (issue candidates)
+## Insert-into-editor (v0.2)
 
-- `api.tracks.register` is the only insertion path — you can't add parts to
-  the *currently open editor session*; the flow is "generate → new track in
-  list → open it in editor". True Schematica-style in-editor ghost placement
-  would need editor-session mappings. Fine for v1; file as enhancement issue.
+The v1 restriction ("`api.tracks.register` is the only insertion path") is
+solved with a one-patch mixin (`mixins.json`): a `before` inject on the track
+class's `setPart` stamps `this` on `window.__polyToTrackTrack`. The anchor is
+the pair of error literals ("Track part below ground", "Track part color does
+not exist") that occur exactly once in the bundle, both inside `setPart`, so
+the target resolves unambiguously. The editor places its initial Start part
+through `setPart` the moment it opens, so the capture is always fresh by the
+time the user can click Insert (a `before` op so it lands even when the game
+throws).
+
+`src/game/insert.ts` wraps the captured instance in an **InsertSession**:
+batch `setPart` with atomic rollback on failure, then translate / rotate /
+replace (live re-voxel on slider moves) / remove until Apply. Rotation about
+Y maps a part origin (x,z) → (z,−x) with `rotation+1` — derived from the
+game's tile-rotation formula, the min corner pinned so the model doesn't
+orbit. The below-ground throw is pre-checked so a bad move refuses instead of
+half-applying.
+
+Limitation (documented, deliberate): the editor's undo stack lives in the
+untransformed lazy chunk 112, which mixins can't reach — only
+`main.bundle.js` is transformed (TSPML#87). The session's own Remove is the
+undo for everything it placed; once Applied, parts are ordinary track data.
+
+The panel itself now mounts inside the game document's `#ui` layer and styles
+itself with the game's CSS custom properties + clip-path idiom, so it reads
+as native editor UI and inherits the ForcedSquare font. The game tears its
+document down on in-game reloads; the panel lazily rebuilds on toggle when
+its root is orphaned.
 
 ## Repo layout
 
 ```
-mod.json            manifest (TSPML schemaVersion 1)
+mod.json            manifest (TSPML schemaVersion 1, declares mixins.json)
+mixins.json         the setPart capture patch (insert-into-editor)
 src/
   entrypoint.ts     factory: keybind + panel mount
   codec/            b62.ts, encode.ts, parts.ts (ids/colors/enums)
   mesh/             stl.ts, obj.ts, transform.ts
-  voxel/            voxelize.ts (SAT tri-box + flood fill)
-  ui/               panel.ts, preview.ts
+  voxel/            voxelize.ts (SAT tri-box + flood fill, anisotropic y),
+                    fit.ts (shape fitting), build.ts (voxels → parts)
+  game/             track.ts (captured-track access), insert.ts (InsertSession)
+  ui/               panel.ts (in-game UI), preview.ts
 tests/              vitest; fixture round-trip vs real community track code
 dist/entrypoint.js  single-file esbuild bundle (pako inlined) — paste this
 ```

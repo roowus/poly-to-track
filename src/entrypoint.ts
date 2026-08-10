@@ -1,7 +1,9 @@
 /**
  * poly-to-track — import 3D models (STL/OBJ) as LEGO-style block builds in
- * PolyTrack, Schematica-style: load, preview, rotate/scale/offset, pick a
- * color, generate a playable track through TSPML's api.tracks registry.
+ * PolyTrack, Schematica-style: load, preview, rotate/scale, pick a color,
+ * then INSERT the model into the open editor (via the mixin-captured track
+ * instance — see mixins.json) with move/rotate controls before applying, or
+ * save it as a standalone track through TSPML's api.tracks registry.
  *
  * Toggle the panel with the ⌨ P key (rebindable in TSPML's keybind UI).
  */

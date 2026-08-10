@@ -14,8 +14,8 @@ export interface VoxelPreview {
   dispose(): void;
 }
 
-export function createVoxelPreview(width: number, height: number): VoxelPreview {
-  const canvas = document.createElement('canvas');
+export function createVoxelPreview(width: number, height: number, doc: Document = document): VoxelPreview {
+  const canvas = doc.createElement('canvas');
   canvas.width = width * devicePixelRatio;
   canvas.height = height * devicePixelRatio;
   canvas.style.width = `${width}px`;
@@ -51,8 +51,11 @@ export function createVoxelPreview(width: number, height: number): VoxelPreview 
 
     const cy = Math.cos(yaw), sy = Math.sin(yaw);
     const cp = Math.cos(pitch), sp = Math.sin(pitch);
-    const midX = grid.nx / 2, midY = grid.ny / 2, midZ = grid.nz / 2;
-    const extent = Math.max(grid.nx, grid.ny, grid.nz);
+    // y cells are anisotropic (¼ height by default); squash y so the preview
+    // shows real-world proportions.
+    const ya = grid.yAspect;
+    const midX = grid.nx / 2, midY = (grid.ny * ya) / 2, midZ = grid.nz / 2;
+    const extent = Math.max(grid.nx, grid.ny * ya, grid.nz);
     const scale = (Math.min(w, h) * 0.72) / extent;
 
     // Project every filled voxel; sample uniformly if over the draw budget.
@@ -64,7 +67,7 @@ export function createVoxelPreview(width: number, height: number): VoxelPreview 
       if (!grid.cells[i]) continue;
       if (seen++ % step !== 0) continue;
       const x = (i % grid.nx) - midX;
-      const y = (Math.floor(i / grid.nx) % grid.ny) - midY;
+      const y = (Math.floor(i / grid.nx) % grid.ny) * ya - midY;
       const z = Math.floor(i / (grid.nx * grid.ny)) - midZ;
       // yaw about Y, then pitch about X; orthographic drop of z.
       const rx = x * cy + z * sy;

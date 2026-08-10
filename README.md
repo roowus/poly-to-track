@@ -4,12 +4,17 @@ A [TSPML](https://github.com/roowus/TSPML) mod that imports 3D models
 (**STL** / **OBJ**) into [PolyTrack](https://www.kodub.com/apps/polytrack) as
 LEGO-style block builds — think **Schematica / Axiom for PolyTrack**.
 
-Load a model, watch the live voxel preview, rotate / scale / offset it, pick
-one of the game's block colors, and hit *Generate*: the mod voxelizes the
-mesh, emits one Block per voxel plus a Start/Finish pad, encodes a genuine
-`PolyTrack2…` track code with the game's own format, and saves it into your
-track list through TSPML's `api.tracks` registry — indistinguishable from a
-hand-imported track.
+Load a model, watch the live voxel preview, pick a resolution and one of the
+game's block colors, then **insert it straight into the open track editor**:
+the model appears in the world you're editing, still selected, with
+move/rotate controls (buttons or Blender-ish keys) until you hit Apply — like
+placing a Schematica ghost. The builds use the game's full shape vocabulary
+(blocks, half/quarter blocks, slopes) so curved models aren't staircases of
+slabs.
+
+There's also a secondary *Save as track* path that encodes a genuine
+`PolyTrack2…` track code and registers it into your track list through
+TSPML's `api.tracks` registry — indistinguishable from a hand-imported track.
 
 ## Installing
 
@@ -28,6 +33,9 @@ hand-imported track.
 
 ## Using it
 
+Open the **track editor** first (the insert flow needs an open editor), then
+press **P**. The panel lives inside the game's UI and follows its styling.
+
 | Control | What it does |
 | --- | --- |
 | **Load STL / OBJ** | Parses the file (binary + ASCII STL; OBJ with quads/negative indices) |
@@ -36,9 +44,25 @@ hand-imported track.
 | **Fill interior** | Solid flood-fill vs. hollow shell (fewer parts) |
 | **Rotate X/Y/Z** | 90° steps, applied to the mesh before voxelization |
 | **Scale** | ×0.25 – ×4 relative to the chosen resolution |
-| **Position offset** | Shifts the whole build in grid cells |
 | **Block color** | Default + the game's 9 custom block colors |
-| **Generate track** | Encodes + registers the track (overwrites same name) |
+| **⤓ Insert into editor** | Places the model into the open editor and enters transform mode |
+| **Save as track** | Secondary path: encodes + registers a standalone track |
+
+While a model is inserted (transform mode), the panel's buttons and these
+keys drive it — the resolution/scale sliders keep working live too:
+
+| Key | Action |
+| --- | --- |
+| ← → / ↑ ↓ | Move one cell in x / z |
+| PgUp / PgDn | Raise / lower one unit |
+| **R** | Rotate 90° about Y |
+| **Enter** | Apply — the parts become a normal part of your track |
+| **Delete** | Remove the inserted model |
+
+Applied parts are ordinary track parts: the editor's own tools (and its
+undo for *your* subsequent edits) treat them like anything you placed by
+hand. The insert itself isn't on the editor's undo stack — use the panel's
+Remove before applying if you change your mind.
 
 The block counter warns before you exceed the 100,000-part budget — lower the
 resolution or uncheck *Fill interior* if you hit it.
@@ -47,11 +71,20 @@ resolution or uncheck *Fill interior* if you hit it.
 
 ```
 STL/OBJ → TriangleMesh → transform (rotate/scale) → voxelize
-  (SAT triangle-box surface pass + 6-connected exterior flood fill)
-→ one Block (id 29) per voxel, 4-tile x/z stride + Start/Finish pad
-→ PolyTrack2 encoder (double deflate + the game's base-62 bitstream)
-→ api.tracks.register → your track list
+  (SAT triangle-box surface pass + 6-connected exterior flood fill,
+   anisotropic grid: 4 y-cells per block so builds aren't flattened)
+→ shape fitting: Block / HalfBlock / QuarterBlock / slope per voxel column
+→ INSERT: a mixin-captured reference to the open editor's track object
+  (setPart/deleteSpecificPart/refreshMeshes) places the parts live, with a
+  session tracking them for move/rotate/replace/remove until you Apply
+→ or SAVE: PolyTrack2 encoder (double deflate + base-62 bitstream)
+  → api.tracks.register → your track list
 ```
+
+The capture mixin (`mixins.json`) anchors on two error strings that exist
+only inside the track class's `setPart` and stamps the instance on a global
+the mod reads — the editor calls `setPart` for its initial Start part the
+moment it opens, so the reference is always fresh.
 
 The `PolyTrack2` codec in `src/codec/` is a byte-exact mirror of the game's
 own encoder (verified round-trip against a real community track in the
@@ -71,14 +104,18 @@ Repo layout:
 
 - `src/codec/` — PolyTrack2 encode/decode + base-62 bitstream + part/color tables
 - `src/mesh/` — STL/OBJ parsers, transforms
-- `src/voxel/` — voxelizer (surface + solid fill), voxels → parts
-- `src/ui/` — the Schematica-style panel + canvas voxel preview
+- `src/voxel/` — voxelizer (surface + solid fill), shape fitting, voxels → parts
+- `src/game/` — captured-track access + the insert session (move/rotate/apply)
+- `src/ui/` — the in-game panel + canvas voxel preview
 - `src/entrypoint.ts` — TSPML mod factory (default export)
+- `mixins.json` — the setPart capture patch (declared in mod.json)
 - `tests/` — vitest suites incl. a real community-track fixture
 - `docs/DESIGN.md` — format notes + architecture
 
 ## Compatibility
 
 Targets PolyTrack `>=0.6.0 <0.7.0` via TSPML. Capabilities: `dom`, `storage`
-(panel UI + persisted settings). `vanillaSafe: true` — it only *adds* tracks;
-no game code is patched.
+(panel UI + persisted settings). `vanillaSafe: true` — the mixin only
+*observes* (it captures a reference to the editor's track object; nothing
+about physics or gameplay changes), and everything the mod builds is ordinary
+track data.

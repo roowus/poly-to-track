@@ -13,6 +13,8 @@ export const PART = {
   Checkpoint: 52,
   HalfBlock: 53,
   QuarterBlock: 54,
+  BlockSlopeUp: 85,
+  BlockSlopeDown: 86,
 } as const;
 
 /** Parts whose serialized form carries a u16 checkpointOrder. */

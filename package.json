@@ -1,9 +1,9 @@
 {
   "name": "poly-to-track",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "type": "module",
-  "description": "Poly To Track — a TSPML mod that imports 3D files (STL/OBJ) and builds them as PolyTrack maps out of the game's own blocks, Schematica-style.",
+  "description": "Poly To Track — a TSPML mod that imports 3D files (STL/OBJ) and builds them as PolyTrack block builds: insert into the open editor with move/rotate controls, or save as a track. Schematica-style.",
   "license": "MIT",
   "scripts": {
     "build": "esbuild src/entrypoint.ts --bundle --format=esm --outfile=dist/entrypoint.js --target=es2022 --minify-whitespace",

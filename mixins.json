@@ -1,0 +1,15 @@
+{
+  "$comment": "TSPML mixin: capture the live track instance. The track class (main bundle) is the only module containing both error literals; every editor session places its initial Start part through setPart the moment it opens, so the capture always holds the OPEN editor's track (or the last play session's). 'before' rather than 'after' so the capture lands even when setPart throws (e.g. below-ground).",
+  "patches": [
+    {
+      "op": "before",
+      "target": {
+        "anchor": {
+          "literals": ["Track part below ground", "Track part color does not exist"]
+        },
+        "selector": { "kind": "method", "name": "setPart" }
+      },
+      "inject": "try { if (typeof window !== 'undefined') { window.__polyToTrackTrack = this; } } catch (_e) {}"
+    }
+  ]
+}

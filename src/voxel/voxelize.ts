@@ -10,10 +10,17 @@ import type { TriangleMesh } from '../mesh/types';
 import { meshBounds } from '../mesh/types';
 
 export interface VoxelizeOptions {
-  /** Longest model axis maps to this many voxels. */
+  /** Longest model axis maps to this many voxels (in x/z cell units). */
   readonly resolution: number;
   /** Fill enclosed interior volume. */
   readonly solid: boolean;
+  /**
+   * y cells per x/z cell. PolyTrack's Block is a 4×4×1-tile slab (world
+   * 20×5×20), so stacking one Block per CUBIC voxel squashes models 4×.
+   * Subdividing y by 4 makes each cell match the Block's real proportions.
+   * Defaults to 4; pass 1 for plain cubic voxels.
+   */
+  readonly ySubdivisions?: number;
 }
 
 export interface VoxelGrid {
@@ -23,18 +30,25 @@ export interface VoxelGrid {
   /** x + y*nx + z*nx*ny; 1 = filled. */
   readonly cells: Uint8Array;
   readonly filledCount: number;
+  /** World-proportion height of one cell relative to its x/z size (1/ySubdivisions). */
+  readonly yAspect: number;
 }
 
 export function voxelize(mesh: TriangleMesh, opts: VoxelizeOptions): VoxelGrid {
-  if (mesh.triangleCount === 0) return { nx: 0, ny: 0, nz: 0, cells: new Uint8Array(0), filledCount: 0 };
+  const ySub = Math.max(1, Math.round(opts.ySubdivisions ?? 4));
+  const yAspect = 1 / ySub;
+  if (mesh.triangleCount === 0) return { nx: 0, ny: 0, nz: 0, cells: new Uint8Array(0), filledCount: 0, yAspect };
   const { min, max } = meshBounds(mesh);
   const size = [max[0] - min[0], max[1] - min[1], max[2] - min[2]];
   const longest = Math.max(size[0]!, size[1]!, size[2]!);
-  if (!(longest > 0)) return { nx: 1, ny: 1, nz: 1, cells: new Uint8Array([1]), filledCount: 1 };
+  if (!(longest > 0)) return { nx: 1, ny: 1, nz: 1, cells: new Uint8Array([1]), filledCount: 1, yAspect };
 
+  // Anisotropic cells (x/z cells are `cell` wide, y cells are `cell/ySub`
+  // tall) are implemented by stretching the mesh's y axis by ySub and
+  // voxelizing cubically — identical math, no per-axis SAT variants.
   const cell = longest / opts.resolution;
   const nx = Math.max(1, Math.ceil(size[0]! / cell - 1e-9));
-  const ny = Math.max(1, Math.ceil(size[1]! / cell - 1e-9));
+  const ny = Math.max(1, Math.ceil((size[1]! * ySub) / cell - 1e-9));
   const nz = Math.max(1, Math.ceil(size[2]! / cell - 1e-9));
   const cells = new Uint8Array(nx * ny * nz);
 
@@ -49,9 +63,10 @@ export function voxelize(mesh: TriangleMesh, opts: VoxelizeOptions): VoxelGrid {
   for (let t = 0; t < mesh.triangleCount; t++) {
     const b = t * 9;
     for (let a = 0; a < 3; a++) {
-      v0[a] = p[b + a]! - min[a]!;
-      v1[a] = p[b + 3 + a]! - min[a]!;
-      v2[a] = p[b + 6 + a]! - min[a]!;
+      const s = a === 1 ? ySub : 1;
+      v0[a] = (p[b + a]! - min[a]!) * s;
+      v1[a] = (p[b + 3 + a]! - min[a]!) * s;
+      v2[a] = (p[b + 6 + a]! - min[a]!) * s;
     }
     // Clamp both ends into the grid: a triangle lying exactly on the max
     // boundary plane floors to one past the last cell and must still test
@@ -79,7 +94,7 @@ export function voxelize(mesh: TriangleMesh, opts: VoxelizeOptions): VoxelGrid {
 
   let filledCount = 0;
   for (let i = 0; i < cells.length; i++) if (cells[i]) filledCount++;
-  return { nx, ny, nz, cells, filledCount };
+  return { nx, ny, nz, cells, filledCount, yAspect };
 }
 
 function clampIndex(v: number, n: number): number {
