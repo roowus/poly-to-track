@@ -1,0 +1,5 @@
+# dist/ IS committed: TSPML URL-import loads the built entrypoint straight
+# from raw.githubusercontent.com, so the bundle must live in the repo.
+node_modules/
+*.log
+.DS_Store

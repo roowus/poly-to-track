@@ -1,0 +1,22 @@
+{
+  "name": "poly-to-track",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Poly To Track — a TSPML mod that imports 3D files (STL/OBJ) and builds them as PolyTrack maps out of the game's own blocks, Schematica-style.",
+  "license": "MIT",
+  "scripts": {
+    "build": "esbuild src/entrypoint.ts --bundle --format=esm --outfile=dist/entrypoint.js --target=es2022 --minify-whitespace",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run"
+  },
+  "devDependencies": {
+    "@types/node": "^26.2.0",
+    "esbuild": "^0.24.0",
+    "typescript": "^5.6.0",
+    "vitest": "^2.1.0"
+  },
+  "dependencies": {
+    "pako": "^2.1.0"
+  }
+}
