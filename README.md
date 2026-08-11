@@ -33,14 +33,14 @@ TSPML's `api.tracks` registry — indistinguishable from a hand-imported track.
    (The manifest's entrypoint resolves to the committed `dist/entrypoint.js`.)
 3. Or **paste manually**: copy `mod.json` and `dist/entrypoint.js` into the
    *Add a mod* dialog.
-4. Open the **track editor** and click the **🧊** button in the editor's
-   cut/copy/paste toolbar — or press **P** (rebindable in TSPML's keybind
-   settings).
+4. Open the **track editor** and click the **cube** button at the left of
+   the editor's cut/copy/paste toolbar — or press **P** (rebindable in
+   TSPML's keybind settings).
 
 ## Using it
 
 The importer is editor-only: open the **track editor**, then click the
-**🧊** button next to cut/copy/paste, or press **P**. The panel lives inside
+**cube** button to the left of cut/copy/paste, or press **P**. The panel lives inside
 the game's UI and follows its styling, and closes itself when you leave the
 editor.
 

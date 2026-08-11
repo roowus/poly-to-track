@@ -17,8 +17,8 @@
  * viewport is just Apply / Cancel. Keys still work: arrows move, PgUp/PgDn
  * raise/lower, R yaws 90°, Enter applies, Delete cancels.
  *
- * Besides the P keybind there's a “🧊” launcher button injected into the
- * editor's own cut/copy/paste mini-toolbar (re-injected whenever the editor
+ * Besides the P keybind there's a white cube launcher button injected at the
+ * left of the editor's own cut/copy/paste mini-toolbar (re-injected whenever the editor
  * UI is rebuilt, which happens per editor entry). The import flow is
  * editor-only, so LEAVING the editor auto-hides the panel and drops any
  * staged session.
@@ -42,6 +42,14 @@ import { createVoxelPreview, type VoxelPreview } from './preview';
 const PANEL_ID = 'poly-to-track-panel';
 const TOOLBAR_ID = 'poly-to-track-toolbar';
 const LAUNCHER_ID = 'poly-to-track-launcher';
+/** White isometric-cube icon, matching the game's flat white toolbar icons
+ *  (the launcher `img` reuses the game's own `.button-icon` sizing). */
+const LAUNCHER_ICON_SRC = 'data:image/svg+xml,' + encodeURIComponent(
+  '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">' +
+  '<path fill="#fff" d="M12 1.6 21.5 7v10L12 22.4 2.5 17V7L12 1.6z' +
+  'm-7.5 7.13v6.98l6.5 3.69v-6.98l-6.5-3.69zm15 0-6.5 3.69v6.98l6.5-3.69V8.73z' +
+  'M12 3.9 5.6 7.53 12 11.16l6.4-3.63L12 3.9z"/></svg>',
+);
 const STYLE_ID = 'poly-to-track-style';
 // v2: rotate/scale moved out of persisted settings into per-session staging
 // state, and `solid` now defaults OFF — key bump re-defaults old stores.
@@ -180,14 +188,6 @@ const PANEL_CSS = `
   color: var(--text-color, #fff);
   margin-right: 6px;
   max-width: 210px;
-}
-/* The launcher rides the game's own .button styling inside the editor's
- * cut/copy/paste mini-toolbar — only the emoji glyph needs sizing. */
-#${LAUNCHER_ID} .ptt-launcher-icon {
-  display: block;
-  font-size: 24px;
-  line-height: 1;
-  font-style: normal;
 }
 `;
 
@@ -533,8 +533,8 @@ export function createPanel(api: TspmlApi): Panel {
     refreshPreview();
   }
 
-  /** The “🧊” launcher rides INSIDE the editor's own cut/copy/paste
-   *  mini-toolbar as one more game-native `button.button` — the editor UI is
+  /** The cube launcher rides INSIDE the editor's own cut/copy/paste
+   *  mini-toolbar (leftmost) as one more game-native `button.button` — the editor UI is
    *  rebuilt on every editor entry, so the poll re-injects it each time. The
    *  same poll watches for LEAVING the editor: import is editor-only, so the
    *  panel auto-closes and any staged session is dropped. */
@@ -565,12 +565,12 @@ export function createPanel(api: TspmlApi): Panel {
     b.id = LAUNCHER_ID;
     b.className = 'button'; // the game's own editor-button styling
     b.title = 'Import a 3D model (STL/OBJ) — poly-to-track (P)';
-    const icon = doc.createElement('span');
-    icon.className = 'ptt-launcher-icon';
-    icon.textContent = '🧊';
+    const icon = doc.createElement('img');
+    icon.className = 'button-icon'; // the game's own icon sizing
+    icon.src = LAUNCHER_ICON_SRC;
     b.appendChild(icon);
     b.addEventListener('click', () => toggle());
-    host.appendChild(b);
+    host.prepend(b); // leftmost, before the game's cut/copy/paste
   }
   const launcherTimer = window.setInterval(pollEditor, LAUNCHER_POLL_MS);
   pollEditor();
