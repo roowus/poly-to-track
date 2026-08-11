@@ -4,6 +4,9 @@
  * it exists so you can sanity-check orientation/resolution before generating,
  * exactly like Schematica's ghost preview. When the grid carries model colors
  * (and the toggle is on) each voxel is drawn in its own color.
+ *
+ * A green ground grid + “GROUND” label is drawn under the model so it's
+ * obvious which way the build will sit on the track (y=0 = track floor).
  */
 import type { VoxelGrid } from '../voxel/voxelize';
 
@@ -63,6 +66,34 @@ export function createVoxelPreview(width: number, height: number, doc: Document 
     const voxColors = modelColors ? grid.colors ?? null : null;
     const base = parseInt(colorHex.slice(1), 16);
     const baseR = (base >> 16) & 255, baseG = (base >> 8) & 255, baseB = base & 255;
+
+    // ---- ground plane (y = 0 = the track floor the build sits on) ----
+    // Drawn first so the model always reads as resting ON it.
+    const proj = (x: number, y: number, z: number): [number, number] => {
+      const rx = x * cy + z * sy;
+      const rz = -x * sy + z * cy;
+      const ry = y * cp - rz * sp;
+      return [w / 2 + rx * scale, h / 2 - ry * scale];
+    };
+    const gy = -midY; // model min-y sits at the ground
+    const gExt = Math.max(midX, midZ) * 1.7 + 2;
+    const gStep = Math.max(2, Math.round(gExt / 4));
+    ctx.strokeStyle = 'rgba(96, 200, 120, 0.4)';
+    ctx.lineWidth = 1 * devicePixelRatio;
+    ctx.beginPath();
+    for (let g = -gExt; g <= gExt + 1e-6; g += gStep) {
+      ctx.moveTo(...proj(-gExt, gy, g));
+      ctx.lineTo(...proj(gExt, gy, g));
+      ctx.moveTo(...proj(g, gy, -gExt));
+      ctx.lineTo(...proj(g, gy, gExt));
+    }
+    ctx.stroke();
+    // Label the plane at its near corner so there's zero ambiguity.
+    const lbl = proj(gExt, gy, gExt);
+    ctx.fillStyle = 'rgba(120, 230, 150, 0.85)';
+    ctx.font = `bold ${11 * devicePixelRatio}px system-ui, sans-serif`;
+    ctx.textAlign = 'left';
+    ctx.fillText('▼ GROUND', lbl[0] - 34 * devicePixelRatio, lbl[1] + 14 * devicePixelRatio);
 
     // Project every filled voxel; sample uniformly if over the draw budget.
     const total = grid.nx * grid.ny * grid.nz;

@@ -4,28 +4,36 @@
  * panels, and — because the panel lives in the game document — the game's
  * ForcedSquare italic font for free).
  *
- * Flow: load a 3D file → orbit the voxel preview → pick resolution / color →
- * **Insert into editor**, which STAGES the parts (nothing written to the
- * track yet) and shows a translucent ghost of the model in the game viewport
- * plus a floating transform toolbar UNDER the viewport: move / rotate / raise
- * / lower, then Apply does the one real placement. Blender-ish keys while
- * transforming: arrows move, PgUp/PgDn raise/lower, R rotates 90°, Enter
- * applies, Delete cancels.
+ * Flow: load a 3D file → orbit the voxel preview (a ground grid + label make
+ * clear which way is DOWN) → dial in resolution, rotation (three any-angle
+ * axis sliders — the mesh is re-voxelized, so diagonal builds are true
+ * diagonal voxelizations, not sheared blocks), scale (keeps the BLOCK size
+ * constant and grows the build — plain mesh scaling would be normalized away
+ * by the longest-axis fit) and color → **Insert into editor**, which STAGES
+ * the parts (nothing written to the track yet): a translucent ghost appears
+ * in the viewport wearing Blender-style 3D transform handles (game/handles.ts
+ * — colored arrows move, square frames rotate any angle, tip boxes scale one
+ * axis, the white center box scales uniformly). The floating strip under the
+ * viewport is just Apply / Cancel. Keys still work: arrows move, PgUp/PgDn
+ * raise/lower, R yaws 90°, Enter applies, Delete cancels.
  *
- * Besides the P keybind there's a persistent “3D IMPORT” launcher button
- * injected into the game UI (re-injected automatically after in-game
- * reloads, which tear down the whole game document).
+ * Besides the P keybind there's a “🧊” launcher button injected into the
+ * editor's own cut/copy/paste mini-toolbar (re-injected whenever the editor
+ * UI is rebuilt, which happens per editor entry). The import flow is
+ * editor-only, so LEAVING the editor auto-hides the panel and drops any
+ * staged session.
  */
 import { COLOR_SWATCHES } from '../codec/parts';
 import { toExportString } from '../codec/encode';
 import { createGhost, type Ghost } from '../game/ghost';
 import { createGizmo, type Gizmo } from '../game/gizmo';
+import { createTransformHandles, type HandlesHost, type TransformHandles } from '../game/handles';
 import { stageParts, type InsertSession } from '../game/insert';
 import { findGameWindow, getCapturedRenderer, getCapturedTrack, pickFreeOffsetCells } from '../game/track';
 import { parseObj } from '../mesh/obj';
 import { parseStl } from '../mesh/stl';
 import { applyTransform, IDENTITY, type MeshTransform } from '../mesh/transform';
-import type { TriangleMesh } from '../mesh/types';
+import { meshBounds, type TriangleMesh } from '../mesh/types';
 import { buildParts, PARTS_WARNING, type BuildOptions } from '../voxel/build';
 import { voxelize, type VoxelGrid } from '../voxel/voxelize';
 import type { TspmlApi } from '../tspml-api';
@@ -35,28 +43,45 @@ const PANEL_ID = 'poly-to-track-panel';
 const TOOLBAR_ID = 'poly-to-track-toolbar';
 const LAUNCHER_ID = 'poly-to-track-launcher';
 const STYLE_ID = 'poly-to-track-style';
-const STORAGE_KEY = 'poly-to-track.settings.v1';
-/** How often the launcher button checks it still exists in the (possibly
- *  reloaded) game document. */
+// v2: rotate/scale moved out of persisted settings into per-session staging
+// state, and `solid` now defaults OFF — key bump re-defaults old stores.
+const STORAGE_KEY = 'poly-to-track.settings.v2';
+/** How often the launcher button checks it still sits in the right host
+ *  (game documents and the editor UI are torn down and rebuilt). */
 const LAUNCHER_POLL_MS = 1500;
+/** Scale holds BLOCK size constant and grows the voxel resolution instead
+ *  (uniform mesh scaling alone is a no-op under longest-axis normalization).
+ *  The cap bounds grid memory: 256 → ≤ 256×1024×256 cells worst case. */
+const MIN_EFFECTIVE_RESOLUTION = 2;
+const MAX_EFFECTIVE_RESOLUTION = 256;
+const MIN_SCALE = 0.1;
+const MAX_SCALE = 16;
 
 interface Settings {
   resolution: number;
   solid: boolean;
   color: number;
   useModelColors: boolean;
-  rotate: [number, number, number];
-  scale: number;
 }
 
 const DEFAULTS: Settings = {
   resolution: 24,
-  solid: true,
+  solid: false,
   color: COLOR_SWATCHES[0]!.id,
   useModelColors: true,
-  rotate: [0, 0, 0],
-  scale: 1,
 };
+
+/** Rotation/scale are per-model staging state, not persisted settings. */
+interface ModelPose {
+  rotate: [number, number, number];
+  scale: [number, number, number];
+}
+const identityPose = (): ModelPose => ({ rotate: [0, 0, 0], scale: [1, 1, 1] });
+
+/** Normalize degrees into [-180, 180] (slider range). */
+const normDeg = (d: number): number => ((d + 180) % 360 + 360) % 360 - 180;
+const clampScale = (s: number): number =>
+  Math.min(MAX_SCALE, Math.max(MIN_SCALE, Math.round(s * 100) / 100));
 
 /** Game-look stylesheet, scoped under the panel/toolbar/launcher ids. Colors
  *  ride the game's own CSS variables so a future palette change restyles us. */
@@ -92,7 +117,7 @@ const PANEL_CSS = `
   min-height: 0;
   scrollbar-width: thin;
 }
-#${PANEL_ID} button.ptt-btn, #${TOOLBAR_ID} button.ptt-btn, #${LAUNCHER_ID} {
+#${PANEL_ID} button.ptt-btn, #${TOOLBAR_ID} button.ptt-btn {
   margin: 0;
   padding: 6px 14px;
   font-size: 22px;
@@ -103,8 +128,8 @@ const PANEL_CSS = `
   cursor: pointer;
   clip-path: polygon(0 0, 100% 0, calc(100% - 8px) 100%, 0 100%);
 }
-#${PANEL_ID} button.ptt-btn:hover, #${TOOLBAR_ID} button.ptt-btn:hover, #${LAUNCHER_ID}:hover { background-color: var(--button-hover-color, #334b77); }
-#${PANEL_ID} button.ptt-btn:active, #${TOOLBAR_ID} button.ptt-btn:active, #${LAUNCHER_ID}:active { background-color: var(--button-active-color, #151f41); }
+#${PANEL_ID} button.ptt-btn:hover, #${TOOLBAR_ID} button.ptt-btn:hover { background-color: var(--button-hover-color, #334b77); }
+#${PANEL_ID} button.ptt-btn:active, #${TOOLBAR_ID} button.ptt-btn:active { background-color: var(--button-active-color, #151f41); }
 #${PANEL_ID} button.ptt-btn:disabled {
   background-color: var(--button-disabled-color, #313d53);
   color: var(--text-disabled-color, #5d6a7c);
@@ -156,13 +181,13 @@ const PANEL_CSS = `
   margin-right: 6px;
   max-width: 210px;
 }
-#${LAUNCHER_ID} {
-  position: absolute;
-  right: calc(var(--safe-area-right, 0px) + 10px);
-  top: 68px;
-  font-size: 19px;
-  pointer-events: auto;
-  z-index: 5;
+/* The launcher rides the game's own .button styling inside the editor's
+ * cut/copy/paste mini-toolbar — only the emoji glyph needs sizing. */
+#${LAUNCHER_ID} .ptt-launcher-icon {
+  display: block;
+  font-size: 24px;
+  line-height: 1;
+  font-style: normal;
 }
 `;
 
@@ -177,18 +202,25 @@ export function createPanel(api: TspmlApi): Panel {
   let meshName = '';
   let grid: VoxelGrid | null = null;
   let settings = loadSettings();
+  let pose = identityPose();
   let revoxTimer = 0;
   let session: InsertSession | null = null;
   let sessionBaseOffset: [number, number, number] = [0, 0, 0];
   let sessionKeyWindow: Window | null = null;
   let gizmo: Gizmo | null = null;
   let ghost: Ghost | null = null;
+  let handles: TransformHandles | null = null;
+  /** Pose snapshot at handle-drag start — drag deltas are TOTALS. */
+  let dragPose: ModelPose | null = null;
+  /** Editor presence last poll — a true→false edge auto-closes the panel. */
+  let wasInEditor = false;
 
   // ---- per-build DOM refs ----
   let root: HTMLDivElement | null = null;
   let toolbar: HTMLDivElement | null = null;
   let preview: VoxelPreview | null = null;
   let fileLabel: HTMLDivElement | null = null;
+  let poseSliders: SliderCtl[] = []; // X°, Y°, Z°, ×scale — for pose reset
   let stats: HTMLDivElement | null = null;
   let status: HTMLDivElement | null = null;
   let insertBtn: HTMLButtonElement | null = null;
@@ -216,7 +248,7 @@ export function createPanel(api: TspmlApi): Panel {
       case 'ArrowDown': moveSession(0, 0, 4); return true;
       case 'PageUp': moveSession(0, 1, 0); return true;
       case 'PageDown': moveSession(0, -1, 0); return true;
-      case 'KeyR': rotateSession(); return true;
+      case 'KeyR': setPose({ rotate: [pose.rotate[0], normDeg(pose.rotate[1] + 90), pose.rotate[2]] }); return true;
       case 'Enter': endSession('apply'); return true;
       case 'Delete': case 'Backspace': endSession('remove'); return true;
       default: return false;
@@ -229,17 +261,60 @@ export function createPanel(api: TspmlApi): Panel {
     syncGizmo();
   }
 
-  function rotateSession(): void {
-    if (!session?.alive) return;
-    session.rotateY();
-    ghost?.setParts(session.parts);
-    syncGizmo();
+  /** The ONE way pose changes (panel sliders, handles, R key): update state,
+   *  mirror the sliders, re-voxelize (debounced — sessions rebuild live). */
+  function setPose(next: Partial<ModelPose>): void {
+    if (next.rotate) pose.rotate = next.rotate.map(normDeg) as [number, number, number];
+    if (next.scale) pose.scale = next.scale.map(clampScale) as [number, number, number];
+    syncPoseSliders();
+    scheduleRevoxel();
   }
 
-  /** Track the selection frame to the session's current bounds. */
+  function syncPoseSliders(): void {
+    poseSliders[0]?.set(pose.rotate[0], `${pose.rotate[0]}°`);
+    poseSliders[1]?.set(pose.rotate[1], `${pose.rotate[1]}°`);
+    poseSliders[2]?.set(pose.rotate[2], `${pose.rotate[2]}°`);
+    const [sx, sy, sz] = pose.scale;
+    poseSliders[3]?.set(sx, sx === sy && sy === sz ? `×${sx}` : `×${sx}/${sy}/${sz}`);
+  }
+
+  /** Track the selection frame + transform handles to the session bounds. */
   function syncGizmo(): void {
     gizmo?.update(session?.alive ? session.bounds : null);
+    handles?.refresh();
   }
+
+  /** Callbacks the in-viewport Blender-style handles drive. Rotate/scale
+   *  drags report TOTALS since drag start, applied over a pose snapshot. */
+  const handlesHost: HandlesHost = {
+    bounds: () => (session?.alive ? session.bounds : null),
+    onDragStart() {
+      dragPose = { rotate: [...pose.rotate], scale: [...pose.scale] };
+    },
+    onTranslate(dx, dy, dz) {
+      moveSession(dx, dy, dz);
+    },
+    onRotate(axis, totalDegrees) {
+      if (!dragPose) return;
+      const rotate: [number, number, number] = [...dragPose.rotate];
+      rotate[axis] = rotate[axis]! + totalDegrees;
+      setPose({ rotate });
+    },
+    onScale(axis, totalFactor) {
+      if (!dragPose) return;
+      const scale: [number, number, number] = [...dragPose.scale];
+      if (axis === -1) {
+        for (let i = 0; i < 3; i++) scale[i] = scale[i]! * totalFactor;
+      } else {
+        scale[axis] = scale[axis]! * totalFactor;
+      }
+      setPose({ scale });
+    },
+    onDragEnd() {
+      dragPose = null;
+      handles?.refresh();
+    },
+  };
 
   function startSessionKeys(w: Window): void {
     stopSessionKeys();
@@ -252,12 +327,15 @@ export function createPanel(api: TspmlApi): Panel {
     sessionKeyWindow = null;
   }
 
-  /** Tear down ghost/gizmo/toolbar/keys — everything visual about a session. */
+  /** Tear down ghost/gizmo/handles/toolbar/keys — everything visual about a session. */
   function clearSessionUi(): void {
     ghost?.dispose();
     ghost = null;
     gizmo?.dispose();
     gizmo = null;
+    handles?.dispose();
+    handles = null;
+    dragPose = null;
     stopSessionKeys();
     if (toolbar) toolbar.style.display = 'none';
     if (insertBtn) insertBtn.disabled = grid === null || grid.filledCount === 0;
@@ -336,10 +414,10 @@ export function createPanel(api: TspmlApi): Panel {
     body.appendChild(preview.canvas);
 
     // resolution + solid
-    body.appendChild(slider(doc, 'Resolution', 4, 128, settings.resolution, 1, String, (v) => {
+    body.appendChild(slider(doc, 'Resolution', 4, MAX_EFFECTIVE_RESOLUTION, settings.resolution, 1, String, (v) => {
       settings.resolution = v;
       scheduleRevoxel();
-    }));
+    }).el);
     const solidLabel = doc.createElement('label');
     const solidCheck = doc.createElement('input');
     solidCheck.type = 'checkbox';
@@ -351,21 +429,28 @@ export function createPanel(api: TspmlApi): Panel {
     solidLabel.append(solidCheck, doc.createTextNode('Fill interior (solid)'));
     body.appendChild(solidLabel);
 
-    // rotate + scale
-    body.appendChild(sectionTitle(doc, 'Rotate model (90° steps)'));
-    const rotRow = doc.createElement('div');
-    rotRow.className = 'ptt-row';
-    (['X', 'Y', 'Z'] as const).forEach((axis, i) => {
-      rotRow.appendChild(btn(doc, `${axis} +90°`, () => {
-        settings.rotate[i] = (settings.rotate[i]! + 90) % 360;
+    // rotate + scale — one drag anywhere on a slider = any angle; snaps to 5°.
+    // Everything here mirrors the in-viewport Blender handles via setPose.
+    body.appendChild(sectionTitle(doc, 'Rotate (drag — any angle)'));
+    poseSliders = (['X', 'Y', 'Z'] as const).map((axis, i) => {
+      const ctl = slider(doc, `${axis} axis`, -180, 180, pose.rotate[i]!, 5, (v) => `${v}°`, (v) => {
+        const rotate: [number, number, number] = [...pose.rotate];
+        rotate[i] = v;
+        pose.rotate = rotate;
         scheduleRevoxel();
-      }));
+      });
+      body.appendChild(ctl.el);
+      return ctl;
     });
-    body.appendChild(rotRow);
-    body.appendChild(slider(doc, 'Scale', 0.25, 4, settings.scale, 0.25, (v) => `×${v}`, (v) => {
-      settings.scale = v;
+    const scaleCtl = slider(doc, 'Scale', MIN_SCALE, 8, pose.scale[0]!, 0.1, (v) => `×${v}`, (v) => {
+      pose.scale = [v, v, v]; // the panel slider scales uniformly; per-axis lives on the 3D handles
       scheduleRevoxel();
-    }));
+    });
+    poseSliders.push(scaleCtl);
+    body.appendChild(scaleCtl.el);
+    const resetBtn = btn(doc, '⟲ Reset rotation & scale', () => setPose(identityPose()));
+    body.appendChild(resetBtn);
+    syncPoseSliders();
 
     // color
     body.appendChild(sectionTitle(doc, 'Block color'));
@@ -426,28 +511,17 @@ export function createPanel(api: TspmlApi): Panel {
     status.className = 'ptt-status';
     body.appendChild(status);
 
-    // Floating transform toolbar — lives in the game viewport, shown only
-    // while a session is being positioned. Independent of the panel, so the
-    // panel can be closed while the ghost is moved around.
+    // Floating Apply/Cancel strip — the actual transforms happen on the 3D
+    // handles (drag arrows/frames/tips in the viewport) or the keyboard.
+    // Independent of the panel, so the panel can be closed while positioning.
     toolbar = doc.createElement('div');
     toolbar.id = TOOLBAR_ID;
     const hint = doc.createElement('span');
     hint.className = 'ptt-hint';
-    hint.textContent = 'arrows move · PgUp/PgDn raise · R rotates · Enter applies';
+    hint.textContent = 'drag arrows to move, frames to rotate, tips to scale one axis · Enter applies';
     const applyBtn = btn(doc, '✓ Apply', () => endSession('apply'));
     applyBtn.classList.add('primary');
-    toolbar.append(
-      hint,
-      btn(doc, '◀', () => moveSession(-4, 0, 0)),
-      btn(doc, '▶', () => moveSession(4, 0, 0)),
-      btn(doc, '▲', () => moveSession(0, 0, -4)),
-      btn(doc, '▼', () => moveSession(0, 0, 4)),
-      btn(doc, 'Up', () => moveSession(0, 1, 0)),
-      btn(doc, 'Down', () => moveSession(0, -1, 0)),
-      btn(doc, '⟳ 90°', () => rotateSession()),
-      applyBtn,
-      btn(doc, '✕ Cancel', () => endSession('remove')),
-    );
+    toolbar.append(hint, applyBtn, btn(doc, '✕ Cancel', () => endSession('remove')));
 
     // The game's #ui layer is scaled with the game UI and has
     // pointer-events:none — the panel re-enables its own. Fall back to body
@@ -459,13 +533,28 @@ export function createPanel(api: TspmlApi): Panel {
     refreshPreview();
   }
 
-  /** Persistent “3D IMPORT” button in the game UI (task: no P key needed).
-   *  Re-injected by the poll whenever a reload replaced the game document. */
-  function ensureLauncher(): void {
+  /** The “🧊” launcher rides INSIDE the editor's own cut/copy/paste
+   *  mini-toolbar as one more game-native `button.button` — the editor UI is
+   *  rebuilt on every editor entry, so the poll re-injects it each time. The
+   *  same poll watches for LEAVING the editor: import is editor-only, so the
+   *  panel auto-closes and any staged session is dropped. */
+  function pollEditor(): void {
     const w = findGameWindow();
-    if (!w) return;
-    const doc = w.document;
+    const doc = w?.document;
+    const editorUi = doc?.querySelector('.editor-ui') ?? null;
+
+    const inEditor = editorUi !== null;
+    if (wasInEditor && !inEditor) {
+      // left the editor — the track being edited is gone from the screen
+      abandonSession();
+      if (root) root.style.display = 'none';
+    }
+    wasInEditor = inEditor;
+    if (!doc || !editorUi) return;
+
     if (doc.getElementById(LAUNCHER_ID)) return;
+    const host = editorUi.querySelector('.mini-toolbar-container');
+    if (!host) return;
     if (!doc.getElementById(STYLE_ID)) {
       const style = doc.createElement('style');
       style.id = STYLE_ID;
@@ -474,13 +563,17 @@ export function createPanel(api: TspmlApi): Panel {
     }
     const b = doc.createElement('button');
     b.id = LAUNCHER_ID;
-    b.textContent = '🧊 3D IMPORT';
-    b.title = 'poly-to-track — import an STL/OBJ model (P)';
+    b.className = 'button'; // the game's own editor-button styling
+    b.title = 'Import a 3D model (STL/OBJ) — poly-to-track (P)';
+    const icon = doc.createElement('span');
+    icon.className = 'ptt-launcher-icon';
+    icon.textContent = '🧊';
+    b.appendChild(icon);
     b.addEventListener('click', () => toggle());
-    (doc.getElementById('ui') ?? doc.body).appendChild(b);
+    host.appendChild(b);
   }
-  const launcherTimer = window.setInterval(ensureLauncher, LAUNCHER_POLL_MS);
-  ensureLauncher();
+  const launcherTimer = window.setInterval(pollEditor, LAUNCHER_POLL_MS);
+  pollEditor();
 
   // ---------- behaviour ----------
 
@@ -492,6 +585,7 @@ export function createPanel(api: TspmlApi): Panel {
       if (nameInput && !nameInput.value) nameInput.value = meshName;
       const colorNote = mesh.colors ? ' · has colors' : '';
       if (fileLabel) fileLabel.textContent = `${file.name} — ${mesh.triangleCount.toLocaleString()} triangles${colorNote}`;
+      setPose(identityPose()); // rotation/scale are per-model — new model, fresh pose
       revoxel();
     } catch (err) {
       mesh = null;
@@ -508,14 +602,6 @@ export function createPanel(api: TspmlApi): Panel {
     revoxTimer = window.setTimeout(revoxel, 150);
   }
 
-  function currentTransform(): MeshTransform {
-    return {
-      ...IDENTITY,
-      rotate: [...settings.rotate],
-      scale: [settings.scale, settings.scale, settings.scale],
-    };
-  }
-
   function refreshPreview(): void {
     preview?.setGrid(grid, swatchHex(settings.color), settings.useModelColors);
     // The toggle only means something when the model actually has colors.
@@ -525,10 +611,29 @@ export function createPanel(api: TspmlApi): Panel {
 
   function revoxel(): void {
     if (!mesh) return;
-    grid = voxelize(applyTransform(mesh, currentTransform()), {
-      resolution: settings.resolution,
-      solid: settings.solid,
-    });
+    // Rotate first, THEN derive the voxel cell size from the UNSCALED rotated
+    // bounds — scaling must keep block size constant and add blocks (a plain
+    // mesh scale would be cancelled by voxelize's longest-axis fit, which is
+    // the "scale just makes the map bigger" bug). Equivalent formulation: the
+    // effective resolution is resolution × (scaled longest / unscaled longest).
+    const rotated = applyTransform(mesh, { ...IDENTITY, rotate: [...pose.rotate] } as MeshTransform);
+    const { min, max } = meshBounds(rotated);
+    const size = [max[0] - min[0], max[1] - min[1], max[2] - min[2]];
+    const [sx, sy, sz] = pose.scale;
+    const l0 = Math.max(size[0]!, size[1]!, size[2]!);
+    const l1 = Math.max(size[0]! * sx, size[1]! * sy, size[2]! * sz);
+    const effRes = Math.min(
+      MAX_EFFECTIVE_RESOLUTION,
+      Math.max(MIN_EFFECTIVE_RESOLUTION, Math.round(settings.resolution * (l0 > 0 ? l1 / l0 : 1))),
+    );
+    // `rotated` is our private copy — scale its positions in place.
+    const p = rotated.positions;
+    for (let i = 0; i < p.length; i += 3) {
+      p[i] = p[i]! * sx;
+      p[i + 1] = p[i + 1]! * sy;
+      p[i + 2] = p[i + 2]! * sz;
+    }
+    grid = voxelize(rotated, { resolution: effRes, solid: settings.solid });
     refreshPreview();
     refreshStats();
     rebuildSessionParts();
@@ -582,17 +687,20 @@ export function createPanel(api: TspmlApi): Panel {
       if (toolbar) toolbar.style.display = 'flex';
       if (insertBtn) insertBtn.disabled = true;
       if (w) startSessionKeys(w);
-      // Ghost + Blender-style selection frame in the game viewport (need the
-      // renderer capture; harmless to skip when it's absent — the toolbar and
-      // panel stats still work, there's just no visual until Apply).
+      // Ghost + selection frame + Blender-style transform handles, all in the
+      // game viewport (need the renderer capture; harmless to skip when it's
+      // absent — keyboard, sliders and panel stats still work, there's just
+      // no visual until Apply).
       const renderer = getCapturedRenderer(w);
       ghost?.dispose();
       ghost = renderer ? createGhost(renderer, session.parts) : null;
       ghost?.setOffset(0, 0, 0);
       gizmo?.dispose();
       gizmo = renderer ? createGizmo(renderer) : null;
+      handles?.dispose();
+      handles = renderer && w ? createTransformHandles(renderer, w, handlesHost) : null;
       syncGizmo();
-      setStatus(`Staged ${session.count.toLocaleString()} parts — position the ghost, then Apply.`, false);
+      setStatus(`Staged ${session.count.toLocaleString()} parts — drag the handles, then Apply.`, false);
     } catch (err) {
       session = null;
       setStatus(`✗ ${err instanceof Error ? err.message : String(err)}`, true);
@@ -666,10 +774,17 @@ function sectionTitle(doc: Document, text: string): HTMLDivElement {
   return d;
 }
 
+interface SliderCtl {
+  el: HTMLDivElement;
+  /** Move the slider + readout WITHOUT firing onChange (external updates —
+   *  e.g. the 3D handles rotating the model — mirror into the panel). */
+  set(value: number, readout?: string): void;
+}
+
 function slider(
   doc: Document, label: string, min: number, max: number, value: number,
   step: number, fmt: (v: number) => string, onChange: (v: number) => void,
-): HTMLDivElement {
+): SliderCtl {
   const el = doc.createElement('div');
   const top = doc.createElement('div');
   top.className = 'ptt-slider-top';
@@ -688,7 +803,13 @@ function slider(
     onChange(v);
   });
   el.append(top, input);
-  return el;
+  return {
+    el,
+    set(v, text) {
+      input.value = String(v);
+      readout.textContent = text ?? fmt(v);
+    },
+  };
 }
 
 function swatchHex(colorId: number): string {
@@ -698,12 +819,9 @@ function swatchHex(colorId: number): string {
 function loadSettings(): Settings {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
-    if (raw) {
-      const merged = { ...DEFAULTS, ...JSON.parse(raw) as Partial<Settings> };
-      return { ...merged, rotate: [...merged.rotate] as [number, number, number] };
-    }
+    if (raw) return { ...DEFAULTS, ...JSON.parse(raw) as Partial<Settings> };
   } catch { /* corrupted settings fall back to defaults */ }
-  return { ...DEFAULTS, rotate: [...DEFAULTS.rotate] };
+  return { ...DEFAULTS };
 }
 
 function saveSettings(s: Settings): void {

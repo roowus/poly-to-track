@@ -4,11 +4,14 @@ A [TSPML](https://github.com/roowus/TSPML) mod that imports 3D models
 (**STL** / **OBJ**) into [PolyTrack](https://www.kodub.com/apps/polytrack) as
 LEGO-style block builds — think **Schematica / Axiom for PolyTrack**.
 
-Load a model, watch the live voxel preview, pick a resolution and colors,
-then **insert it straight into the open track editor**: a translucent ghost
-of the model appears in the world you're editing with a floating transform
-toolbar in the viewport — move/rotate it (buttons or Blender-ish keys), then
-Apply does the one real placement, exactly like placing a Schematica ghost.
+Load a model, watch the live voxel preview (with a ground grid so you can
+see how the build will sit), dial in resolution / any-angle rotation / scale
+/ colors, then **insert it straight into the open track editor**: a
+translucent ghost of the model appears in the world you're editing wearing
+**Blender-style 3D transform handles** — drag the colored arrows to move,
+the square frames to rotate about any axis at any angle, the tip boxes to
+scale a single axis (or the white center box for uniform) — then Apply does
+the one real placement, exactly like placing a Schematica ghost.
 Colored models (OBJ vertex colors, colored binary STL) are mapped
 per-block onto the game's palette. The builds use the game's full shape
 vocabulary (blocks, half/quarter blocks, slopes) so curved models aren't
@@ -30,35 +33,45 @@ TSPML's `api.tracks` registry — indistinguishable from a hand-imported track.
    (The manifest's entrypoint resolves to the committed `dist/entrypoint.js`.)
 3. Or **paste manually**: copy `mod.json` and `dist/entrypoint.js` into the
    *Add a mod* dialog.
-4. Launch the game and click the **🧊 3D IMPORT** button in the top-right of
-   the game UI — or press **P** (rebindable in TSPML's keybind settings).
+4. Open the **track editor** and click the **🧊** button in the editor's
+   cut/copy/paste toolbar — or press **P** (rebindable in TSPML's keybind
+   settings).
 
 ## Using it
 
-Open the **track editor** first (the insert flow needs an open editor), then
-click **🧊 3D IMPORT** or press **P**. The panel lives inside the game's UI
-and follows its styling.
+The importer is editor-only: open the **track editor**, then click the
+**🧊** button next to cut/copy/paste, or press **P**. The panel lives inside
+the game's UI and follows its styling, and closes itself when you leave the
+editor.
 
 | Control | What it does |
 | --- | --- |
 | **Load STL / OBJ** | Parses the file (binary + ASCII STL; OBJ with quads/negative indices) |
-| Preview canvas | Drag to orbit the voxelized model |
-| **Resolution** (4–128) | Longest model axis maps to this many blocks |
-| **Fill interior** | Solid flood-fill vs. hollow shell (fewer parts) |
-| **Rotate X/Y/Z** | 90° steps, applied to the mesh before voxelization |
-| **Scale** | ×0.25 – ×4 relative to the chosen resolution |
+| Preview canvas | Drag to orbit the voxelized model — the green grid + ▼ GROUND label is the track floor the build will sit on |
+| **Resolution** (4–256) | Longest model axis maps to this many blocks |
+| **Fill interior** | Flood-fill the inside (off by default — hollow shells are far fewer parts) |
+| **Rotate X/Y/Z** | Any angle (5° steps), applied to the mesh before voxelization — a 45° build is a true diagonal voxelization, not sheared blocks |
+| **Scale** | ×0.1 – ×8 — block size stays constant, so ×2 really is a bigger build with more blocks, not the same blocks stretched |
 | **Use the model's own colors** | Maps OBJ vertex colors / STL facet colors per block onto the game palette (interior blocks inherit the nearest surface color) |
 | **Block color** | Fallback / flat color: Default + the game's 9 custom block colors |
 | **⤓ Insert into editor** | Stages the model as a viewport ghost and enters transform mode |
 | **Save as track** | Secondary path: encodes + registers a standalone track |
 
-While a model is staged (transform mode), a translucent colored ghost of the
-model plus a Blender-style orange selection frame are drawn in the game
-viewport (the frame reads through terrain, so you always see where the model
-sits), and a floating toolbar at the bottom of the viewport drives it —
-move/raise/rotate/Apply/Cancel. Nothing is written to the track until Apply,
-so moving even a 100k-part model is instant. These keys work too, and the
-resolution/scale/color controls keep updating the ghost live:
+While a model is staged, a translucent colored ghost of the model is drawn
+in the game viewport inside a Blender-style orange selection frame (it reads
+through terrain, so you always see where the model sits), wearing **3D
+transform handles**, Blender-style:
+
+- **Colored arrows** — drag to move along that axis (snaps to the block grid)
+- **Square frames** — drag around the model to rotate about that axis, any
+  angle (snaps to 5°; the model re-voxelizes as you go)
+- **Boxes past the arrow tips** — drag to scale that ONE axis
+- **White center box** — drag to scale uniformly
+
+Red = X, green = Y, blue = Z, exactly like Blender. Nothing is written to
+the track until Apply, so moving even a 100k-part model is instant. The
+panel's sliders mirror the handles (drag a frame and the panel's rotation
+slider follows), and these keys work too:
 
 | Key | Action |
 | --- | --- |
@@ -102,9 +115,11 @@ moment it opens, so the reference is always fresh.
 
 A second mixin captures the game's renderer wrapper the same way (anchored
 on its unique WebGL-failure string, hooked at `setCamera`, which the editor
-calls with its camera on entry). That hands the mod the live three.js scene,
-where `src/game/ghost.ts` draws the staged model and `src/game/gizmo.ts` the
-selection frame. The game doesn't export
+calls with its camera on entry). That hands the mod the live three.js scene
+and camera, where `src/game/ghost.ts` draws the staged model,
+`src/game/gizmo.ts` the selection frame, and `src/game/handles.ts` the
+interactive transform handles (picking is a plain ray/AABB slab test against
+the camera's own matrices — no raycaster class needed). The game doesn't export
 the three.js namespace, so the gizmo *scavenges* constructors off a rendered
 mesh in the scene — walking the mesh's prototype chain to find the plain
 `Mesh` base class (the game's own meshes are instanced subclasses that
