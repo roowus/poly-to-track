@@ -43,5 +43,6 @@ export function applyTransform(mesh: TriangleMesh, t: MeshTransform): TriangleMe
     out[i + 1] = y * t.scale[1] + t.translate[1];
     out[i + 2] = z * t.scale[2] + t.translate[2];
   }
-  return { positions: out, triangleCount: mesh.triangleCount };
+  // Per-triangle colors are order-preserving under vertex transforms.
+  return { positions: out, triangleCount: mesh.triangleCount, ...(mesh.colors ? { colors: mesh.colors } : {}) };
 }

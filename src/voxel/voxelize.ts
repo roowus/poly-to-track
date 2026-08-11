@@ -32,6 +32,9 @@ export interface VoxelGrid {
   readonly filledCount: number;
   /** World-proportion height of one cell relative to its x/z size (1/ySubdivisions). */
   readonly yAspect: number;
+  /** RGB (3 bytes/cell, same indexing) — present only when the mesh carried
+   *  colors. Interior cells inherit the nearest surface color. */
+  readonly colors?: Uint8Array;
 }
 
 export function voxelize(mesh: TriangleMesh, opts: VoxelizeOptions): VoxelGrid {
@@ -42,6 +45,7 @@ export function voxelize(mesh: TriangleMesh, opts: VoxelizeOptions): VoxelGrid {
   const size = [max[0] - min[0], max[1] - min[1], max[2] - min[2]];
   const longest = Math.max(size[0]!, size[1]!, size[2]!);
   if (!(longest > 0)) return { nx: 1, ny: 1, nz: 1, cells: new Uint8Array([1]), filledCount: 1, yAspect };
+  const meshColors = mesh.colors ?? null;
 
   // Anisotropic cells (x/z cells are `cell` wide, y cells are `cell/ySub`
   // tall) are implemented by stretching the mesh's y axis by ySub and
@@ -51,6 +55,7 @@ export function voxelize(mesh: TriangleMesh, opts: VoxelizeOptions): VoxelGrid {
   const ny = Math.max(1, Math.ceil((size[1]! * ySub) / cell - 1e-9));
   const nz = Math.max(1, Math.ceil(size[2]! / cell - 1e-9));
   const cells = new Uint8Array(nx * ny * nz);
+  const colors = meshColors ? new Uint8Array(nx * ny * nz * 3) : null;
 
   // Epsilon-padded: model faces often lie EXACTLY on cell-boundary planes
   // (any axis-aligned geometry does), where float error can flip the SAT's
@@ -84,17 +89,63 @@ export function voxelize(mesh: TriangleMesh, opts: VoxelizeOptions): VoxelGrid {
           const idx = x + y * nx + z * nx * ny;
           if (cells[idx]) continue;
           const cx = (x + 0.5) * cell, cy = (y + 0.5) * cell, cz = (z + 0.5) * cell;
-          if (triBoxOverlap(cx, cy, cz, half, v0, v1, v2)) cells[idx] = 1;
+          if (triBoxOverlap(cx, cy, cz, half, v0, v1, v2)) {
+            cells[idx] = 1;
+            // First triangle to claim the cell colors it (cells[idx] guard
+            // above means later triangles never repaint). (0,0,0) is the
+            // "uncolored" sentinel for interior fill — bump black to (1,1,1).
+            if (colors && meshColors) {
+              const r = meshColors[t * 3]!, g = meshColors[t * 3 + 1]!, b = meshColors[t * 3 + 2]!;
+              colors[idx * 3] = r || g || b ? r : 1;
+              colors[idx * 3 + 1] = r || g || b ? g : 1;
+              colors[idx * 3 + 2] = r || g || b ? b : 1;
+            }
+          }
         }
       }
     }
   }
 
-  if (opts.solid) floodFillInterior(cells, nx, ny, nz);
+  if (opts.solid) {
+    floodFillInterior(cells, nx, ny, nz);
+    if (colors) propagateColors(cells, colors, nx, ny, nz);
+  }
 
   let filledCount = 0;
   for (let i = 0; i < cells.length; i++) if (cells[i]) filledCount++;
-  return { nx, ny, nz, cells, filledCount, yAspect };
+  return { nx, ny, nz, cells, filledCount, yAspect, ...(colors ? { colors } : {}) };
+}
+
+/**
+ * Give interior-filled cells (colored 0,0,0 by the fill) the color of the
+ * nearest surface cell: multi-source BFS out from every colored cell. A true
+ * black surface (0,0,0) would be re-flooded — nudge it to (1,1,1) instead,
+ * invisible after palette mapping.
+ */
+function propagateColors(cells: Uint8Array, colors: Uint8Array, nx: number, ny: number, nz: number): void {
+  const queue: number[] = [];
+  for (let i = 0; i < cells.length; i++) {
+    if (!cells[i]) continue;
+    if (colors[i * 3] || colors[i * 3 + 1] || colors[i * 3 + 2]) queue.push(i);
+  }
+  if (queue.length === 0) return;
+  let head = 0;
+  while (head < queue.length) {
+    const i = queue[head++]!;
+    const x = i % nx;
+    const y = Math.floor(i / nx) % ny;
+    const z = Math.floor(i / (nx * ny));
+    for (const [dx, dy, dz] of [[1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, 1], [0, 0, -1]] as const) {
+      const X = x + dx, Y = y + dy, Z = z + dz;
+      if (X < 0 || X >= nx || Y < 0 || Y >= ny || Z < 0 || Z >= nz) continue;
+      const j = X + Y * nx + Z * nx * ny;
+      if (!cells[j] || colors[j * 3] || colors[j * 3 + 1] || colors[j * 3 + 2]) continue;
+      colors[j * 3] = Math.max(1, colors[i * 3]!);
+      colors[j * 3 + 1] = Math.max(1, colors[i * 3 + 1]!);
+      colors[j * 3 + 2] = Math.max(1, colors[i * 3 + 2]!);
+      queue.push(j);
+    }
+  }
 }
 
 function clampIndex(v: number, n: number): number {

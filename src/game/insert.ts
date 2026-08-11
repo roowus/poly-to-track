@@ -1,13 +1,13 @@
 /**
- * Live-editor insertion session: place the built parts into the captured game
- * track, then keep enough state to move / rotate / re-place / remove them
- * until the user commits — the Blender-style "object is selected until you
- * click away" phase. The selection frame drawn around the placed parts lives
- * in gizmo.ts (via the renderer-capture mixin); this module only exposes the
- * session's tile-space `bounds` for it.
+ * Staged insertion session — Schematica-style. While the user positions the
+ * model NOTHING is written to the track: the session just accumulates a tile
+ * offset / quarter-turns over the built part list (the ghost mesh in ghost.ts
+ * is the visual). `commit()` does the one real placement (with rollback);
+ * `remove()` never touches the track at all.
  *
- * The editor's undo stack is NOT integrated (it lives in the same lazy chunk);
- * the session's own remove() is the undo for everything it placed.
+ * This is what makes transform mode O(1) per step — the old design re-placed
+ * every part through `setPart` on each move, which froze the game for seconds
+ * at high part counts.
  */
 import type { PlacedPart } from '../codec/parts';
 import type { GameTrack } from './track';
@@ -42,132 +42,106 @@ export function translateParts(
 }
 
 export interface InsertSession {
-  /** Number of parts currently placed. */
+  /** Number of parts staged. */
   readonly count: number;
-  /** Tile-space bounds of the placed part origins, or null when empty. */
+  /** The staged parts BEFORE the session offset (rotation already applied). */
+  readonly parts: readonly PlacedPart[];
+  /** Accumulated translation in tiles/y-units. */
+  readonly offset: { readonly x: number; readonly y: number; readonly z: number };
+  /** Tile-space bounds of the parts INCLUDING the offset, or null when empty. */
   readonly bounds: {
     readonly min: readonly [number, number, number];
     readonly max: readonly [number, number, number];
   } | null;
   /** Move by tiles/units. Refuses (returns false) if it would sink below ground. */
   translate(dx: number, dy: number, dz: number): boolean;
-  /** Quarter-turn about Y, in place. */
+  /** Quarter-turn about Y (regenerates the staged list — listeners should
+   *  re-read `parts`). */
   rotateY(): void;
-  /** Swap the placed parts for a re-built list (scale / resolution change),
-   *  keeping the current session position. Returns false if placement failed. */
-  replaceParts(next: readonly PlacedPart[]): boolean;
-  /** Where the session currently sits relative to the initial placement. */
-  readonly offset: { x: number; y: number; z: number };
-  /** Delete everything the session placed. The session is dead afterwards. */
-  remove(): void;
-  /** Keep everything as-is and stop tracking. The session is dead afterwards. */
+  /** Swap the staged parts for a re-built list (scale / resolution change),
+   *  keeping the current session offset. */
+  replaceParts(next: readonly PlacedPart[]): void;
+  /** PLACE the parts into the track (the one real write; rolls back if the
+   *  game refuses mid-way). Throws on failure — the session stays alive so
+   *  the user can move the model and retry. */
   commit(): void;
+  /** Drop the staged model. Never touches the track. */
+  remove(): void;
   readonly alive: boolean;
 }
 
-/**
- * Place `parts` into `track` and return the live session, or throw if the
- * game refuses (e.g. below ground). Parts are placed WITHOUT checkpoint/start
- * orders — the open editor already owns its Start.
- */
-export function insertParts(track: GameTrack, parts: readonly PlacedPart[]): InsertSession {
-  let placed: PlacedPart[] = [];
+/** Stage `parts` for insertion into `track`. Nothing is placed until commit. */
+export function stageParts(track: GameTrack, parts: readonly PlacedPart[]): InsertSession {
+  let staged: PlacedPart[] = [...parts];
   let alive = true;
   const offset = { x: 0, y: 0, z: 0 };
 
-  const placeAll = (list: readonly PlacedPart[]): void => {
-    const done: PlacedPart[] = [];
-    try {
-      for (const p of list) {
-        track.setPart(p.x, p.y, p.z, p.partId, p.rotation, p.rotationAxis, p.color, null, null);
-        done.push(p);
-      }
-    } catch (err) {
-      // Roll back the partial placement so a failed move never leaves half a
-      // model behind.
-      for (const p of done) {
-        try { track.deleteSpecificPart(p.partId, p.x, p.y, p.z, p.rotation, p.rotationAxis); } catch { /* already gone */ }
-      }
-      throw err;
-    }
-    placed = [...list];
-  };
-
-  const removeAll = (): void => {
-    for (const p of placed) {
-      try { track.deleteSpecificPart(p.partId, p.x, p.y, p.z, p.rotation, p.rotationAxis); } catch { /* user may have deleted it in the editor */ }
-    }
-    placed = [];
-  };
-
-  const swap = (next: readonly PlacedPart[]): boolean => {
-    const prev = placed;
-    removeAll();
-    try {
-      placeAll(next);
-    } catch {
-      // Restore the previous placement; if even that fails the game state is
-      // unchanged (placeAll rolled itself back) and the session keeps prev
-      // coordinates so remove() stays a no-op on the missing parts.
-      try { placeAll(prev); } catch { /* rolled back to empty */ }
-      track.refreshMeshes();
-      return false;
-    }
-    track.refreshMeshes();
-    return true;
-  };
-
-  placeAll(parts);
-  track.refreshMeshes();
-
   return {
-    get count() { return placed.length; },
+    get count() { return staged.length; },
+    get parts() { return staged; },
     get alive() { return alive; },
+    offset,
     get bounds() {
-      if (placed.length === 0) return null;
+      if (!alive || staged.length === 0) return null;
       const min: [number, number, number] = [Infinity, Infinity, Infinity];
       const max: [number, number, number] = [-Infinity, -Infinity, -Infinity];
-      for (const p of placed) {
+      for (const p of staged) {
         if (p.x < min[0]) min[0] = p.x; if (p.x > max[0]) max[0] = p.x;
         if (p.y < min[1]) min[1] = p.y; if (p.y > max[1]) max[1] = p.y;
         if (p.z < min[2]) min[2] = p.z; if (p.z > max[2]) max[2] = p.z;
       }
-      return { min, max };
+      return {
+        min: [min[0] + offset.x, min[1] + offset.y, min[2] + offset.z] as const,
+        max: [max[0] + offset.x, max[1] + offset.y, max[2] + offset.z] as const,
+      };
     },
-    offset,
 
     translate(dx, dy, dz) {
-      if (!alive || placed.length === 0) return false;
-      // The game throws "Track part below ground" for y<0 — check first.
-      const minY = Math.min(...placed.map((p) => p.y));
-      if (minY + dy < 0) return false;
-      const ok = swap(translateParts(placed, dx, dy, dz));
-      if (ok) { offset.x += dx; offset.y += dy; offset.z += dz; }
-      return ok;
+      if (!alive || staged.length === 0) return false;
+      // The game throws "Track part below ground" for y<0 — refuse up front.
+      let minY = Infinity;
+      for (const p of staged) if (p.y < minY) minY = p.y;
+      if (minY + offset.y + dy < 0) return false;
+      offset.x += dx; offset.y += dy; offset.z += dz;
+      return true;
     },
 
     rotateY() {
-      if (!alive || placed.length === 0) return;
-      swap(rotatePartsY(placed));
+      if (!alive || staged.length === 0) return;
+      staged = rotatePartsY(staged);
     },
 
     replaceParts(next) {
-      if (!alive) return false;
-      // Keep the session's accumulated translation so a rescale doesn't jump
-      // the model back to its birth position.
-      return swap(translateParts(next, offset.x, offset.y, offset.z));
-    },
-
-    remove() {
       if (!alive) return;
-      alive = false;
-      removeAll();
-      track.refreshMeshes();
+      staged = [...next];
     },
 
     commit() {
+      if (!alive) throw new Error('session is over');
+      const final = translateParts(staged, offset.x, offset.y, offset.z);
+      const done: PlacedPart[] = [];
+      try {
+        for (const p of final) {
+          track.setPart(p.x, p.y, p.z, p.partId, p.rotation, p.rotationAxis, p.color, null, null);
+          done.push(p);
+        }
+      } catch (err) {
+        // Roll back the partial placement so a failed apply never leaves half
+        // a model behind. The session stays alive — move it and retry.
+        for (const p of done) {
+          try { track.deleteSpecificPart(p.partId, p.x, p.y, p.z, p.rotation, p.rotationAxis); } catch { /* already gone */ }
+        }
+        track.refreshMeshes();
+        throw err;
+      }
+      track.refreshMeshes();
       alive = false;
-      placed = [];
+      staged = [];
+    },
+
+    remove() {
+      alive = false;
+      staged = [];
     },
   };
 }

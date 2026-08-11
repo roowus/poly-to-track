@@ -2,7 +2,8 @@
  * Dependency-free voxel preview: orthographic projection of the voxel grid
  * onto a canvas, painter-sorted by depth, drag to orbit. Not a full renderer —
  * it exists so you can sanity-check orientation/resolution before generating,
- * exactly like Schematica's ghost preview.
+ * exactly like Schematica's ghost preview. When the grid carries model colors
+ * (and the toggle is on) each voxel is drawn in its own color.
  */
 import type { VoxelGrid } from '../voxel/voxelize';
 
@@ -10,7 +11,7 @@ const MAX_DRAWN_VOXELS = 60_000;
 
 export interface VoxelPreview {
   readonly canvas: HTMLCanvasElement;
-  setGrid(grid: VoxelGrid | null, colorHex: string): void;
+  setGrid(grid: VoxelGrid | null, colorHex: string, useModelColors?: boolean): void;
   dispose(): void;
 }
 
@@ -26,6 +27,7 @@ export function createVoxelPreview(width: number, height: number, doc: Document 
 
   let grid: VoxelGrid | null = null;
   let colorHex = '#b8b8b8';
+  let modelColors = true;
   let yaw = Math.PI / 5;
   let pitch = Math.PI / 7;
   let dragging = false;
@@ -58,10 +60,14 @@ export function createVoxelPreview(width: number, height: number, doc: Document 
     const extent = Math.max(grid.nx, grid.ny * ya, grid.nz);
     const scale = (Math.min(w, h) * 0.72) / extent;
 
+    const voxColors = modelColors ? grid.colors ?? null : null;
+    const base = parseInt(colorHex.slice(1), 16);
+    const baseR = (base >> 16) & 255, baseG = (base >> 8) & 255, baseB = base & 255;
+
     // Project every filled voxel; sample uniformly if over the draw budget.
     const total = grid.nx * grid.ny * grid.nz;
     const step = Math.max(1, Math.ceil(grid.filledCount / MAX_DRAWN_VOXELS));
-    const pts: number[] = []; // sx, sy, depth triples
+    const pts: number[] = []; // sx, sy, depth, cellIndex quads
     let seen = 0;
     for (let i = 0; i < total; i++) {
       if (!grid.cells[i]) continue;
@@ -74,17 +80,25 @@ export function createVoxelPreview(width: number, height: number, doc: Document 
       const rz = -x * sy + z * cy;
       const ry = y * cp - rz * sp;
       const depth = y * sp + rz * cp;
-      pts.push(w / 2 + rx * scale, h / 2 - ry * scale, depth);
+      pts.push(w / 2 + rx * scale, h / 2 - ry * scale, depth, i);
     }
     const order: number[] = [];
-    for (let i = 0; i < pts.length; i += 3) order.push(i);
+    for (let i = 0; i < pts.length; i += 4) order.push(i);
     order.sort((a, b) => pts[a + 2]! - pts[b + 2]!);
 
     const size = Math.max(1.5 * devicePixelRatio, scale * 0.92);
     for (const i of order) {
       // Cheap depth shading keeps the silhouette readable without lighting.
       const t = (pts[i + 2]! / extent + 0.5) * 0.55 + 0.45;
-      ctx.fillStyle = shade(colorHex, t);
+      let r = baseR, g = baseG, b = baseB;
+      if (voxColors) {
+        const ci = pts[i + 3]! * 3;
+        // (0,0,0) = uncolored cell sentinel → keep the base swatch color.
+        if (voxColors[ci] || voxColors[ci + 1] || voxColors[ci + 2]) {
+          r = voxColors[ci]!; g = voxColors[ci + 1]!; b = voxColors[ci + 2]!;
+        }
+      }
+      ctx.fillStyle = shade(r, g, b, t);
       ctx.fillRect(pts[i]! - size / 2, pts[i + 1]! - size / 2, size, size);
     }
   }
@@ -118,9 +132,10 @@ export function createVoxelPreview(width: number, height: number, doc: Document 
 
   return {
     canvas,
-    setGrid(g, hex) {
+    setGrid(g, hex, useModelColors = true) {
       grid = g;
       colorHex = hex;
+      modelColors = useModelColors;
       requestDraw();
     },
     dispose() {
@@ -134,10 +149,9 @@ export function createVoxelPreview(width: number, height: number, doc: Document 
   };
 }
 
-function shade(hex: string, t: number): string {
-  const n = parseInt(hex.slice(1), 16);
-  const r = Math.min(255, Math.round(((n >> 16) & 255) * t + 24));
-  const g = Math.min(255, Math.round(((n >> 8) & 255) * t + 24));
-  const b = Math.min(255, Math.round((n & 255) * t + 24));
-  return `rgb(${r},${g},${b})`;
+function shade(r: number, g: number, b: number, t: number): string {
+  const R = Math.min(255, Math.round(r * t + 24));
+  const G = Math.min(255, Math.round(g * t + 24));
+  const B = Math.min(255, Math.round(b * t + 24));
+  return `rgb(${R},${G},${B})`;
 }

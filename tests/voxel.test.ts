@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
-import { PART } from '../src/codec/parts';
+import { COLOR, nearestColorId, PART } from '../src/codec/parts';
 import { parseObj } from '../src/mesh/obj';
-import { buildParts, MAX_PARTS } from '../src/voxel/build';
+import { buildParts, PARTS_WARNING } from '../src/voxel/build';
 import { fitShapes } from '../src/voxel/fit';
 import { voxelize, type VoxelGrid } from '../src/voxel/voxelize';
 
@@ -120,15 +120,63 @@ describe('buildParts', () => {
     expect(ramp!.y).toBe(2);
   });
 
-  it('enforces the part budget', () => {
-    const big = {
-      nx: 100, ny: 100, nz: 11,
-      cells: new Uint8Array(100 * 100 * 11).fill(1),
-      filledCount: 110_000,
+  it('has NO hard part limit — huge grids build fine (soft warning only)', () => {
+    const big: VoxelGrid = {
+      nx: 100, ny: 101, nz: 11,
+      cells: new Uint8Array(100 * 101 * 11).fill(1),
+      filledCount: 111_100,
       yAspect: 1,
     };
-    expect(110_000).toBeGreaterThan(MAX_PARTS);
-    expect(() => buildParts(big)).toThrow(/lower the resolution/i);
+    expect(big.filledCount).toBeGreaterThan(PARTS_WARNING); // over the old cap
+    const parts = buildParts(big, { color: 0, withPad: false, shaped: false });
+    expect(parts).toHaveLength(111_100);
+  });
+});
+
+describe('model colors', () => {
+  /** A colored unit cube: every vertex red (OBJ `v x y z r g b` extension). */
+  const RED_CUBE_OBJ = CUBE_OBJ.replace(/^v (.+)$/gm, 'v $1 1 0 0');
+
+  it('voxelize carries surface colors and fills the interior from them', () => {
+    const mesh = parseObj(RED_CUBE_OBJ);
+    expect(mesh.colors).toBeDefined();
+    const grid = voxelize(mesh, { resolution: 4, solid: true, ySubdivisions: 1 });
+    expect(grid.colors).toBeDefined();
+    // Every filled cell (including the 2³ flood-filled interior) is red-ish.
+    for (let i = 0; i < grid.cells.length; i++) {
+      if (!grid.cells[i]) continue;
+      expect(grid.colors![i * 3]).toBeGreaterThan(200);
+      expect(grid.colors![i * 3 + 1]).toBeLessThan(30);
+    }
+  });
+
+  it('buildParts maps voxel colors onto the game palette per part', () => {
+    const mesh = parseObj(RED_CUBE_OBJ);
+    const grid = voxelize(mesh, { resolution: 2, solid: true, ySubdivisions: 1 });
+    const parts = buildParts(grid, { color: COLOR.Default, withPad: false, shaped: false });
+    // Pure red maps to the game's red swatch (Custom1 = 33), not Default.
+    expect(parts.every((p) => p.color === 33)).toBe(true);
+  });
+
+  it('useModelColors:false falls back to the flat color', () => {
+    const mesh = parseObj(RED_CUBE_OBJ);
+    const grid = voxelize(mesh, { resolution: 2, solid: true, ySubdivisions: 1 });
+    const parts = buildParts(grid, { color: 40, useModelColors: false, withPad: false, shaped: false });
+    expect(parts.every((p) => p.color === 40)).toBe(true);
+  });
+
+  it('an uncolored model produces no color channel at all', () => {
+    const mesh = parseObj(CUBE_OBJ);
+    expect(mesh.colors).toBeUndefined();
+    const grid = voxelize(mesh, { resolution: 2, solid: true, ySubdivisions: 1 });
+    expect(grid.colors).toBeUndefined();
+  });
+
+  it('nearestColorId picks sensible palette entries', () => {
+    expect(nearestColorId(255, 0, 0)).toBe(33);     // red
+    expect(nearestColorId(0, 0, 0)).toBe(32);       // black
+    expect(nearestColorId(200, 200, 200)).toBe(0);  // light gray → Default
+    expect(nearestColorId(40, 90, 45)).toBe(36);    // green
   });
 });
 

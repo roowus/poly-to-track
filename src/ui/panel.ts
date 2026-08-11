@@ -5,37 +5,46 @@
  * ForcedSquare italic font for free).
  *
  * Flow: load a 3D file → orbit the voxel preview → pick resolution / color →
- * **Insert into editor**, which places the parts into the OPEN editor via the
- * mixin-captured track instance and enters transform mode: move / rotate /
- * scale the placed model (buttons or keyboard), then Apply or Remove.
- * Blender-ish keys while transforming: arrows move, PgUp/PgDn raise/lower,
- * R rotates 90°, Enter applies, Delete removes.
+ * **Insert into editor**, which STAGES the parts (nothing written to the
+ * track yet) and shows a translucent ghost of the model in the game viewport
+ * plus a floating transform toolbar UNDER the viewport: move / rotate / raise
+ * / lower, then Apply does the one real placement. Blender-ish keys while
+ * transforming: arrows move, PgUp/PgDn raise/lower, R rotates 90°, Enter
+ * applies, Delete cancels.
  *
- * The game document is torn down on every in-game reload, so the panel
- * rebuilds itself lazily on toggle whenever its root is orphaned.
+ * Besides the P keybind there's a persistent “3D IMPORT” launcher button
+ * injected into the game UI (re-injected automatically after in-game
+ * reloads, which tear down the whole game document).
  */
 import { COLOR_SWATCHES } from '../codec/parts';
 import { toExportString } from '../codec/encode';
+import { createGhost, type Ghost } from '../game/ghost';
 import { createGizmo, type Gizmo } from '../game/gizmo';
-import { insertParts, type InsertSession } from '../game/insert';
+import { stageParts, type InsertSession } from '../game/insert';
 import { findGameWindow, getCapturedRenderer, getCapturedTrack, pickFreeOffsetCells } from '../game/track';
 import { parseObj } from '../mesh/obj';
 import { parseStl } from '../mesh/stl';
 import { applyTransform, IDENTITY, type MeshTransform } from '../mesh/transform';
 import type { TriangleMesh } from '../mesh/types';
-import { buildParts, MAX_PARTS, type BuildOptions } from '../voxel/build';
+import { buildParts, PARTS_WARNING, type BuildOptions } from '../voxel/build';
 import { voxelize, type VoxelGrid } from '../voxel/voxelize';
 import type { TspmlApi } from '../tspml-api';
 import { createVoxelPreview, type VoxelPreview } from './preview';
 
 const PANEL_ID = 'poly-to-track-panel';
+const TOOLBAR_ID = 'poly-to-track-toolbar';
+const LAUNCHER_ID = 'poly-to-track-launcher';
 const STYLE_ID = 'poly-to-track-style';
 const STORAGE_KEY = 'poly-to-track.settings.v1';
+/** How often the launcher button checks it still exists in the (possibly
+ *  reloaded) game document. */
+const LAUNCHER_POLL_MS = 1500;
 
 interface Settings {
   resolution: number;
   solid: boolean;
   color: number;
+  useModelColors: boolean;
   rotate: [number, number, number];
   scale: number;
 }
@@ -44,12 +53,13 @@ const DEFAULTS: Settings = {
   resolution: 24,
   solid: true,
   color: COLOR_SWATCHES[0]!.id,
+  useModelColors: true,
   rotate: [0, 0, 0],
   scale: 1,
 };
 
-/** Game-look stylesheet, scoped under the panel id. Colors ride the game's
- *  own CSS variables so a future palette change restyles us too. */
+/** Game-look stylesheet, scoped under the panel/toolbar/launcher ids. Colors
+ *  ride the game's own CSS variables so a future palette change restyles us. */
 const PANEL_CSS = `
 #${PANEL_ID} {
   position: absolute;
@@ -82,7 +92,7 @@ const PANEL_CSS = `
   min-height: 0;
   scrollbar-width: thin;
 }
-#${PANEL_ID} button.ptt-btn {
+#${PANEL_ID} button.ptt-btn, #${TOOLBAR_ID} button.ptt-btn, #${LAUNCHER_ID} {
   margin: 0;
   padding: 6px 14px;
   font-size: 22px;
@@ -93,15 +103,15 @@ const PANEL_CSS = `
   cursor: pointer;
   clip-path: polygon(0 0, 100% 0, calc(100% - 8px) 100%, 0 100%);
 }
-#${PANEL_ID} button.ptt-btn:hover { background-color: var(--button-hover-color, #334b77); }
-#${PANEL_ID} button.ptt-btn:active { background-color: var(--button-active-color, #151f41); }
+#${PANEL_ID} button.ptt-btn:hover, #${TOOLBAR_ID} button.ptt-btn:hover, #${LAUNCHER_ID}:hover { background-color: var(--button-hover-color, #334b77); }
+#${PANEL_ID} button.ptt-btn:active, #${TOOLBAR_ID} button.ptt-btn:active, #${LAUNCHER_ID}:active { background-color: var(--button-active-color, #151f41); }
 #${PANEL_ID} button.ptt-btn:disabled {
   background-color: var(--button-disabled-color, #313d53);
   color: var(--text-disabled-color, #5d6a7c);
   cursor: default;
 }
-#${PANEL_ID} button.ptt-btn.primary { background-color: var(--surface-color, #28346a); font-weight: bold; }
-#${PANEL_ID} button.ptt-btn.primary:hover { background-color: var(--button-hover-color, #334b77); }
+#${PANEL_ID} button.ptt-btn.primary, #${TOOLBAR_ID} button.ptt-btn.primary { background-color: var(--surface-color, #28346a); font-weight: bold; }
+#${PANEL_ID} button.ptt-btn.primary:hover, #${TOOLBAR_ID} button.ptt-btn.primary:hover { background-color: var(--button-hover-color, #334b77); }
 #${PANEL_ID} .ptt-title {
   font-size: 16px;
   text-transform: uppercase;
@@ -125,6 +135,35 @@ const PANEL_CSS = `
 #${PANEL_ID} canvas { background: var(--surface-tertiary-color, #192042); }
 #${PANEL_ID} label { font-size: 20px; display: flex; gap: 8px; align-items: center; cursor: pointer; }
 #${PANEL_ID} input[type="checkbox"] { width: 20px; height: 20px; accent-color: var(--surface-color, #28346a); }
+#${TOOLBAR_ID} {
+  position: absolute;
+  left: 50%;
+  bottom: 18px;
+  transform: translateX(-50%);
+  display: none;
+  gap: 6px;
+  align-items: center;
+  padding: 8px 14px;
+  background-color: var(--surface-secondary-color, #212b58);
+  clip-path: polygon(8px 0, calc(100% - 8px) 0, 100% 100%, 0 100%);
+  pointer-events: auto;
+  z-index: 6;
+}
+#${TOOLBAR_ID} .ptt-hint {
+  font-size: 15px;
+  opacity: 0.7;
+  color: var(--text-color, #fff);
+  margin-right: 6px;
+  max-width: 210px;
+}
+#${LAUNCHER_ID} {
+  position: absolute;
+  right: calc(var(--safe-area-right, 0px) + 10px);
+  top: 68px;
+  font-size: 19px;
+  pointer-events: auto;
+  z-index: 5;
+}
 `;
 
 export interface Panel {
@@ -143,9 +182,11 @@ export function createPanel(api: TspmlApi): Panel {
   let sessionBaseOffset: [number, number, number] = [0, 0, 0];
   let sessionKeyWindow: Window | null = null;
   let gizmo: Gizmo | null = null;
+  let ghost: Ghost | null = null;
 
   // ---- per-build DOM refs ----
   let root: HTMLDivElement | null = null;
+  let toolbar: HTMLDivElement | null = null;
   let preview: VoxelPreview | null = null;
   let fileLabel: HTMLDivElement | null = null;
   let stats: HTMLDivElement | null = null;
@@ -153,7 +194,8 @@ export function createPanel(api: TspmlApi): Panel {
   let insertBtn: HTMLButtonElement | null = null;
   let saveBtn: HTMLButtonElement | null = null;
   let nameInput: HTMLInputElement | null = null;
-  let transformBox: HTMLDivElement | null = null;
+  let modelColorsLabel: HTMLLabelElement | null = null;
+  let modelColorsCheck: HTMLInputElement | null = null;
 
   const onSessionKey = (e: KeyboardEvent): void => {
     if (!session?.alive) return;
@@ -182,12 +224,15 @@ export function createPanel(api: TspmlApi): Panel {
   }
 
   function moveSession(dx: number, dy: number, dz: number): void {
-    session?.translate(dx, dy, dz);
+    if (!session?.translate(dx, dy, dz)) return;
+    ghost?.setOffset(session.offset.x, session.offset.y, session.offset.z);
     syncGizmo();
   }
 
   function rotateSession(): void {
-    session?.rotateY();
+    if (!session?.alive) return;
+    session.rotateY();
+    ghost?.setParts(session.parts);
     syncGizmo();
   }
 
@@ -207,24 +252,45 @@ export function createPanel(api: TspmlApi): Panel {
     sessionKeyWindow = null;
   }
 
-  function endSession(how: 'apply' | 'remove'): void {
-    if (session) {
-      if (how === 'apply') session.commit();
-      else session.remove();
-      session = null;
-    }
+  /** Tear down ghost/gizmo/toolbar/keys — everything visual about a session. */
+  function clearSessionUi(): void {
+    ghost?.dispose();
+    ghost = null;
     gizmo?.dispose();
     gizmo = null;
     stopSessionKeys();
-    if (transformBox) transformBox.style.display = 'none';
+    if (toolbar) toolbar.style.display = 'none';
     if (insertBtn) insertBtn.disabled = grid === null || grid.filledCount === 0;
-    setStatus(how === 'apply' ? '✓ Applied — the parts are part of the track now' : 'Removed.', false);
+  }
+
+  function endSession(how: 'apply' | 'remove'): void {
+    if (session?.alive && how === 'apply') {
+      try {
+        session.commit(); // the ONE real write into the track
+      } catch (err) {
+        setStatus(`✗ ${err instanceof Error ? err.message : String(err)} — move the model and try again`, true);
+        return; // session stays alive, ghost stays up
+      }
+    } else {
+      session?.remove();
+    }
+    session = null;
+    clearSessionUi();
+    setStatus(how === 'apply' ? '✓ Applied — the parts are part of the track now' : 'Canceled — nothing was placed.', false);
+  }
+
+  /** Drop a session whose game document (and track) no longer exists. */
+  function abandonSession(): void {
+    session?.remove();
+    session = null;
+    clearSessionUi();
   }
 
   // ---------- UI construction (rebuilt per game document) ----------
 
   function build(doc: Document): void {
     doc.getElementById(PANEL_ID)?.remove();
+    doc.getElementById(TOOLBAR_ID)?.remove();
     if (!doc.getElementById(STYLE_ID)) {
       const style = doc.createElement('style');
       style.id = STYLE_ID;
@@ -303,6 +369,18 @@ export function createPanel(api: TspmlApi): Panel {
 
     // color
     body.appendChild(sectionTitle(doc, 'Block color'));
+    modelColorsLabel = doc.createElement('label');
+    modelColorsCheck = doc.createElement('input');
+    modelColorsCheck.type = 'checkbox';
+    modelColorsCheck.checked = settings.useModelColors;
+    modelColorsCheck.addEventListener('change', () => {
+      settings.useModelColors = modelColorsCheck!.checked;
+      saveSettings(settings);
+      refreshPreview();
+      rebuildSessionParts();
+    });
+    modelColorsLabel.append(modelColorsCheck, doc.createTextNode('Use the model’s own colors'));
+    body.appendChild(modelColorsLabel);
     const swatchRow = doc.createElement('div');
     swatchRow.className = 'ptt-row';
     swatchRow.style.flexWrap = 'wrap';
@@ -317,7 +395,8 @@ export function createPanel(api: TspmlApi): Panel {
         saveSettings(settings);
         for (const el of Array.from(swatchRow.children)) el.classList.remove('selected');
         b.classList.add('selected');
-        preview?.setGrid(grid, swatchHex(settings.color));
+        refreshPreview();
+        rebuildSessionParts();
       });
       swatchRow.appendChild(b);
     }
@@ -333,33 +412,6 @@ export function createPanel(api: TspmlApi): Panel {
     insertBtn.disabled = grid === null || grid.filledCount === 0;
     body.appendChild(insertBtn);
 
-    // transform mode (hidden until an insert succeeds)
-    transformBox = doc.createElement('div');
-    transformBox.style.cssText = 'display:none;flex-direction:column;gap:5px';
-    transformBox.appendChild(sectionTitle(doc, 'Transform — arrows move · PgUp/PgDn raise · R rotates'));
-    const moveRow1 = doc.createElement('div');
-    moveRow1.className = 'ptt-row';
-    moveRow1.append(
-      btn(doc, '◀ X', () => moveSession(-4, 0, 0)),
-      btn(doc, 'X ▶', () => moveSession(4, 0, 0)),
-      btn(doc, '▲ Z', () => moveSession(0, 0, -4)),
-      btn(doc, 'Z ▼', () => moveSession(0, 0, 4)),
-    );
-    const moveRow2 = doc.createElement('div');
-    moveRow2.className = 'ptt-row';
-    moveRow2.append(
-      btn(doc, 'Up', () => moveSession(0, 1, 0)),
-      btn(doc, 'Down', () => moveSession(0, -1, 0)),
-      btn(doc, '⟳ 90°', () => rotateSession()),
-    );
-    const endRow = doc.createElement('div');
-    endRow.className = 'ptt-row';
-    const applyBtn = btn(doc, '✓ Apply (Enter)', () => endSession('apply'));
-    applyBtn.classList.add('primary');
-    endRow.append(applyBtn, btn(doc, '✕ Remove (Del)', () => endSession('remove')));
-    transformBox.append(moveRow1, moveRow2, endRow);
-    body.appendChild(transformBox);
-
     // save-as-track (secondary path — the old flow, still useful for sharing)
     body.appendChild(sectionTitle(doc, 'Or save as a new track'));
     nameInput = doc.createElement('input');
@@ -374,14 +426,61 @@ export function createPanel(api: TspmlApi): Panel {
     status.className = 'ptt-status';
     body.appendChild(status);
 
+    // Floating transform toolbar — lives in the game viewport, shown only
+    // while a session is being positioned. Independent of the panel, so the
+    // panel can be closed while the ghost is moved around.
+    toolbar = doc.createElement('div');
+    toolbar.id = TOOLBAR_ID;
+    const hint = doc.createElement('span');
+    hint.className = 'ptt-hint';
+    hint.textContent = 'arrows move · PgUp/PgDn raise · R rotates · Enter applies';
+    const applyBtn = btn(doc, '✓ Apply', () => endSession('apply'));
+    applyBtn.classList.add('primary');
+    toolbar.append(
+      hint,
+      btn(doc, '◀', () => moveSession(-4, 0, 0)),
+      btn(doc, '▶', () => moveSession(4, 0, 0)),
+      btn(doc, '▲', () => moveSession(0, 0, -4)),
+      btn(doc, '▼', () => moveSession(0, 0, 4)),
+      btn(doc, 'Up', () => moveSession(0, 1, 0)),
+      btn(doc, 'Down', () => moveSession(0, -1, 0)),
+      btn(doc, '⟳ 90°', () => rotateSession()),
+      applyBtn,
+      btn(doc, '✕ Cancel', () => endSession('remove')),
+    );
+
     // The game's #ui layer is scaled with the game UI and has
     // pointer-events:none — the panel re-enables its own. Fall back to body
     // (e.g. running outside the game frame in tests).
-    (doc.getElementById('ui') ?? doc.body).appendChild(root);
+    const host = doc.getElementById('ui') ?? doc.body;
+    host.append(root, toolbar);
 
     if (grid) refreshStats();
-    preview.setGrid(grid, swatchHex(settings.color));
+    refreshPreview();
   }
+
+  /** Persistent “3D IMPORT” button in the game UI (task: no P key needed).
+   *  Re-injected by the poll whenever a reload replaced the game document. */
+  function ensureLauncher(): void {
+    const w = findGameWindow();
+    if (!w) return;
+    const doc = w.document;
+    if (doc.getElementById(LAUNCHER_ID)) return;
+    if (!doc.getElementById(STYLE_ID)) {
+      const style = doc.createElement('style');
+      style.id = STYLE_ID;
+      style.textContent = PANEL_CSS;
+      doc.head.appendChild(style);
+    }
+    const b = doc.createElement('button');
+    b.id = LAUNCHER_ID;
+    b.textContent = '🧊 3D IMPORT';
+    b.title = 'poly-to-track — import an STL/OBJ model (P)';
+    b.addEventListener('click', () => toggle());
+    (doc.getElementById('ui') ?? doc.body).appendChild(b);
+  }
+  const launcherTimer = window.setInterval(ensureLauncher, LAUNCHER_POLL_MS);
+  ensureLauncher();
 
   // ---------- behaviour ----------
 
@@ -391,13 +490,14 @@ export function createPanel(api: TspmlApi): Panel {
       mesh = lower.endsWith('.obj') ? parseObj(await file.text()) : parseStl(await file.arrayBuffer());
       meshName = file.name.replace(/\.(stl|obj)$/i, '');
       if (nameInput && !nameInput.value) nameInput.value = meshName;
-      if (fileLabel) fileLabel.textContent = `${file.name} — ${mesh.triangleCount.toLocaleString()} triangles`;
+      const colorNote = mesh.colors ? ' · has colors' : '';
+      if (fileLabel) fileLabel.textContent = `${file.name} — ${mesh.triangleCount.toLocaleString()} triangles${colorNote}`;
       revoxel();
     } catch (err) {
       mesh = null;
       grid = null;
       if (fileLabel) fileLabel.textContent = `⚠ ${err instanceof Error ? err.message : String(err)}`;
-      preview?.setGrid(null, swatchHex(settings.color));
+      refreshPreview();
       if (stats) stats.textContent = '';
     }
   }
@@ -416,37 +516,53 @@ export function createPanel(api: TspmlApi): Panel {
     };
   }
 
+  function refreshPreview(): void {
+    preview?.setGrid(grid, swatchHex(settings.color), settings.useModelColors);
+    // The toggle only means something when the model actually has colors.
+    if (modelColorsCheck) modelColorsCheck.disabled = !grid?.colors;
+    if (modelColorsLabel) modelColorsLabel.style.opacity = grid?.colors ? '' : '0.45';
+  }
+
   function revoxel(): void {
     if (!mesh) return;
     grid = voxelize(applyTransform(mesh, currentTransform()), {
       resolution: settings.resolution,
       solid: settings.solid,
     });
-    preview?.setGrid(grid, swatchHex(settings.color));
+    refreshPreview();
     refreshStats();
-    // A live session tracks the sliders: rebuild and swap in place.
-    if (session?.alive && grid) {
-      try {
-        session.replaceParts(buildParts(grid, sessionBuildOptions()));
-        syncGizmo();
-      } catch (err) {
-        setStatus(`⚠ ${err instanceof Error ? err.message : String(err)}`, true);
-      }
+    rebuildSessionParts();
+  }
+
+  /** A live session tracks the sliders/color settings: rebuild in place. */
+  function rebuildSessionParts(): void {
+    if (!session?.alive || !grid) return;
+    try {
+      session.replaceParts(buildParts(grid, sessionBuildOptions()));
+      ghost?.setParts(session.parts);
+      syncGizmo();
+    } catch (err) {
+      setStatus(`⚠ ${err instanceof Error ? err.message : String(err)}`, true);
     }
   }
 
   function refreshStats(): void {
     if (!stats || !grid) return;
-    const over = grid.filledCount > MAX_PARTS;
-    stats.textContent = `${grid.nx}×${grid.ny}×${grid.nz} grid — ${grid.filledCount.toLocaleString()} blocks${over ? ` (over the ${MAX_PARTS.toLocaleString()} limit!)` : ''}`;
-    stats.style.color = over ? '#ff9696' : '';
-    const disabled = over || grid.filledCount === 0;
+    const over = grid.filledCount > PARTS_WARNING;
+    stats.textContent = `${grid.nx}×${grid.ny}×${grid.nz} grid — ${grid.filledCount.toLocaleString()} blocks${over ? ' — huge build, the game may chug' : ''}`;
+    stats.style.color = over ? '#ffd27d' : '';
+    const disabled = grid.filledCount === 0;
     if (insertBtn && !session?.alive) insertBtn.disabled = disabled;
     if (saveBtn) saveBtn.disabled = disabled;
   }
 
   function sessionBuildOptions(): BuildOptions {
-    return { color: settings.color, withPad: false, offset: sessionBaseOffset };
+    return {
+      color: settings.color,
+      useModelColors: settings.useModelColors,
+      withPad: false,
+      offset: sessionBaseOffset,
+    };
   }
 
   function insert(): void {
@@ -462,17 +578,21 @@ export function createPanel(api: TspmlApi): Panel {
     }
     try {
       sessionBaseOffset = pickFreeOffsetCells(track);
-      session = insertParts(track, buildParts(grid, sessionBuildOptions()));
-      if (transformBox) transformBox.style.display = 'flex';
+      session = stageParts(track, buildParts(grid, sessionBuildOptions()));
+      if (toolbar) toolbar.style.display = 'flex';
       if (insertBtn) insertBtn.disabled = true;
       if (w) startSessionKeys(w);
-      // Blender-style selection frame in the game viewport (needs the
-      // renderer capture; harmless to skip when it's absent).
+      // Ghost + Blender-style selection frame in the game viewport (need the
+      // renderer capture; harmless to skip when it's absent — the toolbar and
+      // panel stats still work, there's just no visual until Apply).
       const renderer = getCapturedRenderer(w);
+      ghost?.dispose();
+      ghost = renderer ? createGhost(renderer, session.parts) : null;
+      ghost?.setOffset(0, 0, 0);
       gizmo?.dispose();
       gizmo = renderer ? createGizmo(renderer) : null;
       syncGizmo();
-      setStatus(`Inserted ${session.count.toLocaleString()} parts — move/rotate, then Apply.`, false);
+      setStatus(`Staged ${session.count.toLocaleString()} parts — position the ghost, then Apply.`, false);
     } catch (err) {
       session = null;
       setStatus(`✗ ${err instanceof Error ? err.message : String(err)}`, true);
@@ -486,7 +606,7 @@ export function createPanel(api: TspmlApi): Panel {
     }
     try {
       const name = nameInput?.value.trim() || meshName || 'poly-to-track model';
-      const parts = buildParts(grid, { color: settings.color });
+      const parts = buildParts(grid, { color: settings.color, useModelColors: settings.useModelColors });
       const code = toExportString(parts, { name, author: 'poly-to-track' });
       setStatus('Saving…', false);
       const res = await api.tracks.register({ code, name, overwrite: true, persist: true });
@@ -502,27 +622,29 @@ export function createPanel(api: TspmlApi): Panel {
     status.style.color = isError ? '#ff9696' : '#96ff96';
   }
 
+  function toggle(): void {
+    // Rebuild when unbuilt or orphaned (frame reload replaced the document).
+    const gameDoc = findGameWindow()?.document ?? document;
+    if (!root || !root.isConnected || root.ownerDocument !== gameDoc) {
+      abandonSession(); // the old document's track/scene is gone; nothing was placed
+      preview?.dispose();
+      build(gameDoc);
+      root!.style.display = 'flex';
+      return;
+    }
+    root.style.display = root.style.display === 'none' ? 'flex' : 'none';
+  }
+
   return {
-    toggle() {
-      // Rebuild when unbuilt or orphaned (frame reload replaced the document).
-      const gameDoc = findGameWindow()?.document ?? document;
-      if (!root || !root.isConnected || root.ownerDocument !== gameDoc) {
-        if (session?.alive) endSession('apply'); // old document's track is gone; drop tracking
-        preview?.dispose();
-        build(gameDoc);
-        root!.style.display = 'flex';
-        return;
-      }
-      root.style.display = root.style.display === 'none' ? 'flex' : 'none';
-    },
+    toggle,
     dispose() {
       clearTimeout(revoxTimer);
-      if (session?.alive) session.commit();
-      gizmo?.dispose();
-      gizmo = null;
-      stopSessionKeys();
+      clearInterval(launcherTimer);
+      abandonSession(); // staged-only — unload must not silently write the track
       preview?.dispose();
       root?.remove();
+      toolbar?.remove();
+      try { findGameWindow()?.document.getElementById(LAUNCHER_ID)?.remove(); } catch { /* frame gone */ }
     },
   };
 }

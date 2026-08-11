@@ -68,6 +68,44 @@ export const COLOR_SWATCHES: readonly { id: number; name: string; hex: string }[
 ];
 
 /**
+ * Nearest game block color for an sRGB triple — used to map colored-model
+ * voxels onto the game's fixed palette. The game's custom surfaces are all
+ * DARK versions of their hue (pure red input vs #501b1b), so any RGB-space
+ * metric lets brightness swamp hue and sends "red" to "orange". Compare in
+ * HSV instead: hue dominates (gated by saturation so grays ignore it),
+ * saturation next, value least.
+ */
+export function nearestColorId(r: number, g: number, b: number): number {
+  const [h, s, v] = rgbToHsv(r, g, b);
+  let best = COLOR_SWATCHES[0]!.id;
+  let bestD = Infinity;
+  for (const sw of COLOR_SWATCHES) {
+    const n = parseInt(sw.hex.slice(1), 16);
+    const [sh, ss, sv] = rgbToHsv((n >> 16) & 255, (n >> 8) & 255, n & 255);
+    let dh = Math.abs(h - sh);
+    if (dh > 0.5) dh = 1 - dh; // hue wraps
+    const ds = s - ss, dv = v - sv;
+    const d = 40 * dh * dh * s * ss + ds * ds + 0.3 * dv * dv;
+    if (d < bestD) { bestD = d; best = sw.id; }
+  }
+  return best;
+}
+
+/** sRGB bytes → HSV, hue normalized to [0,1). */
+function rgbToHsv(r: number, g: number, b: number): [number, number, number] {
+  const max = Math.max(r, g, b), min = Math.min(r, g, b);
+  const delta = max - min;
+  let h = 0;
+  if (delta > 0) {
+    if (max === r) h = ((g - b) / delta + 6) % 6;
+    else if (max === g) h = (b - r) / delta + 2;
+    else h = (r - g) / delta + 4;
+    h /= 6;
+  }
+  return [h, max === 0 ? 0 : delta / max, max / 255];
+}
+
+/**
  * One placed part, in the game's tile grid: a full Block spans 4×4 tiles in
  * x/z and 1 unit in y, so adjacent Blocks sit 4 tiles apart horizontally and
  * 1 apart vertically (matches the game's legacy-v2 importer, which multiplies

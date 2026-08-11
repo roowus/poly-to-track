@@ -142,7 +142,7 @@ describe('createGizmo', () => {
 
 describe('InsertSession.bounds', () => {
   it('exposes tile-space bounds that follow translation', async () => {
-    const { insertParts } = await import('../src/game/insert');
+    const { stageParts } = await import('../src/game/insert');
     const track = {
       setPart() { /* accept everything */ },
       deleteSpecificPart() { return null; },
@@ -150,7 +150,7 @@ describe('InsertSession.bounds', () => {
     };
     const p = (x: number, y: number, z: number) =>
       ({ x, y, z, partId: 29, rotation: 0, rotationAxis: 0, color: 0 });
-    const session = insertParts(track, [p(0, 0, 0), p(8, 2, 4)]);
+    const session = stageParts(track, [p(0, 0, 0), p(8, 2, 4)]);
     expect(session.bounds).toEqual({ min: [0, 0, 0], max: [8, 2, 4] });
     session.translate(4, 1, 0);
     expect(session.bounds).toEqual({ min: [4, 1, 0], max: [12, 3, 4] });

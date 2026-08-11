@@ -8,13 +8,17 @@
  * drive pad: Start + Finish at y=0, so the generated track is immediately
  * playable.
  */
-import { AXIS, COLOR, PART, type PlacedPart } from '../codec/parts';
+import { AXIS, COLOR, nearestColorId, PART, type PlacedPart } from '../codec/parts';
 import { fitShapes } from './fit';
 import type { VoxelGrid } from './voxelize';
 
 export interface BuildOptions {
-  /** TrackPartColor id for every block. */
+  /** TrackPartColor id for every block (fallback when the model has no colors
+   *  or useModelColors is off). */
   readonly color: number;
+  /** Map per-voxel model colors to the nearest game color (default true when
+   *  the grid carries colors). */
+  readonly useModelColors?: boolean;
   /** Grid-cell offset applied to the whole model. */
   readonly offset?: [number, number, number];
   /** Include the Start/Finish drive pad (default true). */
@@ -28,8 +32,9 @@ export interface BuildOptions {
 
 export const DEFAULT_BUILD: BuildOptions = { color: COLOR.Default };
 
-/** Hard ceiling — beyond this the code gets huge and the game struggles. */
-export const MAX_PARTS = 100_000;
+/** Soft threshold for UI warnings only — huge builds are allowed, but the
+ *  game visibly chugs past this and track CODES get enormous. */
+export const PARTS_WARNING = 100_000;
 
 /**
  * Track coordinates are in tiles; a full Block occupies 4×4 tiles in x/z and
@@ -40,16 +45,26 @@ export const MAX_PARTS = 100_000;
 export const BLOCK_XZ_STRIDE = 4;
 
 export function buildParts(grid: VoxelGrid, opts: BuildOptions = DEFAULT_BUILD): PlacedPart[] {
-  if (grid.filledCount > MAX_PARTS) {
-    throw new Error(
-      `Too many blocks (${grid.filledCount.toLocaleString()} > ${MAX_PARTS.toLocaleString()}) — lower the resolution`,
-    );
-  }
   const [ox, oy, oz] = opts.offset ?? [0, 0, 0];
   const parts: PlacedPart[] = [];
   const fit = opts.shaped !== false ? fitShapes(grid) : null;
+  const voxColors = opts.useModelColors !== false ? grid.colors ?? null : null;
+  // Distinct voxel colors are few after palette mapping — memoize by packed RGB.
+  const colorCache = new Map<number, number>();
+  const colorAt = (key: number): number => {
+    if (!voxColors) return opts.color;
+    const r = voxColors[key * 3]!, g = voxColors[key * 3 + 1]!, b = voxColors[key * 3 + 2]!;
+    if (r === 0 && g === 0 && b === 0) return opts.color; // uncolored cell
+    const packed = (r << 16) | (g << 8) | b;
+    let id = colorCache.get(packed);
+    if (id === undefined) {
+      id = nearestColorId(r, g, b);
+      colorCache.set(packed, id);
+    }
+    return id;
+  };
 
-  const place = (x: number, y: number, z: number, partId: number, rotation: number): void => {
+  const place = (x: number, y: number, z: number, partId: number, rotation: number, color: number): void => {
     parts.push({
       x: (x + ox) * BLOCK_XZ_STRIDE,
       y: y + oy + 1, // keep the model one cell above the pad's ground level
@@ -57,7 +72,7 @@ export function buildParts(grid: VoxelGrid, opts: BuildOptions = DEFAULT_BUILD):
       partId,
       rotation,
       rotationAxis: AXIS.YPositive,
-      color: opts.color,
+      color,
     });
   };
 
@@ -67,19 +82,14 @@ export function buildParts(grid: VoxelGrid, opts: BuildOptions = DEFAULT_BUILD):
         const key = x + y * grid.nx + z * grid.nx * grid.ny;
         if (grid.cells[key]) {
           const shaped = fit?.filledParts.get(key);
-          place(x, y, z, shaped?.partId ?? PART.Block, shaped?.rotation ?? 0);
+          place(x, y, z, shaped?.partId ?? PART.Block, shaped?.rotation ?? 0, colorAt(key));
         } else {
           const ramp = fit?.rampParts.get(key);
-          if (ramp) place(x, y, z, ramp.partId, ramp.rotation);
+          // A ramp fills an empty cell — color it like the step it leans on.
+          if (ramp) place(x, y, z, ramp.partId, ramp.rotation, colorAt(key - grid.nx));
         }
       }
     }
-  }
-
-  if (parts.length > MAX_PARTS) {
-    throw new Error(
-      `Too many parts after shape fitting (${parts.length.toLocaleString()} > ${MAX_PARTS.toLocaleString()}) — lower the resolution`,
-    );
   }
 
   if (opts.withPad !== false) {

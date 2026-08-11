@@ -59,6 +59,35 @@ describe('parseObj', () => {
   it('throws on empty input', () => {
     expect(() => parseObj('# nothing')).toThrow(/no faces/i);
   });
+
+  it('reads vertex colors (v x y z r g b, 0–1 floats)', () => {
+    const mesh = parseObj('v 0 0 0 1 0 0\nv 1 0 0 1 0 0\nv 0 1 0 1 0 0\nf 1 2 3');
+    expect(mesh.colors).toBeDefined();
+    expect([...mesh.colors!]).toEqual([255, 0, 0]);
+  });
+
+  it('treats components >1 as a 0–255 file', () => {
+    const mesh = parseObj('v 0 0 0 255 128 0\nv 1 0 0 255 128 0\nv 0 1 0 255 128 0\nf 1 2 3');
+    expect([...mesh.colors!]).toEqual([255, 128, 0]);
+  });
+
+  it('averages colored vertices and grays out uncolored triangles', () => {
+    const obj = [
+      'v 0 0 0 1 0 0', // red
+      'v 1 0 0 0 0 1', // blue
+      'v 0 1 0',       // uncolored — excluded from the average
+      'v 2 2 2', 'v 3 2 2', 'v 2 3 2', // all uncolored
+      'f 1 2 3',
+      'f 4 5 6',
+    ].join('\n');
+    const mesh = parseObj(obj);
+    expect([...mesh.colors!.slice(0, 3)]).toEqual([128, 0, 128]); // avg(red, blue)
+    expect([...mesh.colors!.slice(3, 6)]).toEqual([184, 184, 184]); // neutral gray
+  });
+
+  it('emits no color channel when no vertex has one', () => {
+    expect(parseObj(CUBE_OBJ).colors).toBeUndefined();
+  });
 });
 
 describe('parseStl', () => {
@@ -84,6 +113,31 @@ endsolid t`;
   it('rejects truncated binary files', () => {
     const buf = binaryStlCube().slice(0, 100);
     expect(() => parseStl(buf)).toThrow(/truncated/i);
+  });
+
+  it('plain binary STL (zero attributes) has no color channel', () => {
+    expect(parseStl(binaryStlCube()).colors).toBeUndefined();
+  });
+
+  it('decodes VisCAM/SolidView facet colors (bit15=1, blue in low bits)', () => {
+    const buf = binaryStlCube();
+    const view = new DataView(buf);
+    // Facet 0: red=31, green=0, blue=0 → bits 10-14, valid bit set.
+    view.setUint16(84 + 12 + 36, 0x8000 | (31 << 10), true);
+    const mesh = parseStl(buf);
+    expect(mesh.colors).toBeDefined();
+    expect([...mesh.colors!.slice(0, 3)]).toEqual([248, 0, 0]); // 31<<3
+    expect([...mesh.colors!.slice(3, 6)]).toEqual([184, 184, 184]); // facet 1 uncolored
+  });
+
+  it('decodes Materialise Magics colors (COLOR= header, red in low bits)', () => {
+    const buf = binaryStlCube();
+    new Uint8Array(buf).set(new TextEncoder().encode('COLOR=....'), 0);
+    const view = new DataView(buf);
+    // Facet 0: red in the LOW 5 bits, bit15 CLEAR = per-facet color.
+    view.setUint16(84 + 12 + 36, 31, true);
+    const mesh = parseStl(buf);
+    expect([...mesh.colors!.slice(0, 3)]).toEqual([248, 0, 0]);
   });
 });
 

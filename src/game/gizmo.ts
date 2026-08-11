@@ -30,9 +30,9 @@ export interface Gizmo {
 }
 
 /** World units per tile / per y step — the game's `partSize`. */
-const PART_SIZE = 5;
+export const PART_SIZE = 5;
 /** A Block's 4×4-tile footprint is CENTERED on its origin tile (spans −2..+2 ×5). */
-const XZ_HALF_SPAN = 2 * PART_SIZE;
+export const XZ_HALF_SPAN = 2 * PART_SIZE;
 const EDGE_R = 0.5;   // edge cuboid half-thickness (world units)
 const CORNER_R = 1.4; // corner cube half-size
 const BOXES = 12 + 8;
@@ -49,25 +49,26 @@ interface Object3DLike {
   renderOrder?: number;
   frustumCulled?: boolean;
   name?: string;
+  position?: { set(x: number, y: number, z: number): unknown };
 }
-interface MeshLike extends Object3DLike {
+export interface MeshLike extends Object3DLike {
   isMesh?: boolean;
   geometry?: GeometryLike;
   material?: MaterialLike | MaterialLike[];
 }
-interface GeometryLike {
+export interface GeometryLike {
   isBufferGeometry?: boolean;
   getAttribute?(name: string): AttributeLike | undefined;
   setAttribute?(name: string, attr: unknown): unknown;
   dispose?(): void;
   attributes?: Record<string, AttributeLike>;
 }
-interface AttributeLike {
+export interface AttributeLike {
   isBufferAttribute?: boolean;
   array?: unknown;
   needsUpdate?: boolean;
 }
-interface MaterialLike {
+export interface MaterialLike {
   isMaterial?: boolean;
   clone?(): MaterialLike;
   dispose?(): void;
@@ -85,7 +86,7 @@ interface MaterialLike {
 
 type Ctor<T> = new (...args: never[]) => T;
 
-interface Scavenged {
+export interface Scavenged {
   Mesh: new (geometry: unknown, material: unknown) => MeshLike;
   BufferGeometry: new () => GeometryLike;
   BufferAttribute: new (array: Float32Array, itemSize: number) => AttributeLike;
@@ -127,8 +128,9 @@ function resolvePlainMeshCtor(
   return null;
 }
 
-/** Find a rendered Mesh in the scene and lift the constructors we need off it. */
-function scavenge(scene: unknown): Scavenged | null {
+/** Find a rendered Mesh in the scene and lift the constructors we need off it.
+ *  Shared with ghost.ts — every fresh caller gets its own cloned material. */
+export function scavenge(scene: unknown): Scavenged | null {
   const stack: unknown[] = [scene];
   let guard = 0;
   while (stack.length > 0 && guard++ < 20000) {
@@ -156,7 +158,7 @@ function scavenge(scene: unknown): Scavenged | null {
 }
 
 /** Append the 12 triangles (36 verts) of an axis-aligned cuboid. */
-function pushBox(
+export function pushBox(
   out: Float32Array, offset: number,
   x0: number, y0: number, z0: number, x1: number, y1: number, z1: number,
 ): number {

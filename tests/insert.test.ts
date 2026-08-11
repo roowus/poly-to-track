@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { AXIS, PART, type PlacedPart } from '../src/codec/parts';
-import { insertParts, rotatePartsY, rotatePartY, translateParts } from '../src/game/insert';
+import { rotatePartsY, rotatePartY, stageParts, translateParts } from '../src/game/insert';
 import { asGameTrack, type GameTrack } from '../src/game/track';
 
 function part(x: number, y: number, z: number, partId: number = PART.Block, rotation = 0): PlacedPart {
@@ -54,63 +54,84 @@ describe('rotatePartsY', () => {
   });
 });
 
-describe('insertParts', () => {
-  it('places all parts and commit leaves them in the track', () => {
+describe('stageParts', () => {
+  it('stages without touching the track; commit does the one placement', () => {
     const track = fakeTrack();
-    const session = insertParts(track, [part(0, 1, 0), part(4, 1, 0)]);
-    expect(track.parts.size).toBe(2);
+    const session = stageParts(track, [part(0, 1, 0), part(4, 1, 0)]);
+    expect(track.parts.size).toBe(0); // NOTHING placed while staging
+    expect(session.count).toBe(2);
     session.commit();
     expect(session.alive).toBe(false);
     expect(track.parts.size).toBe(2);
   });
 
-  it('remove deletes everything it placed', () => {
+  it('remove drops the staged model and never touches the track', () => {
     const track = fakeTrack();
-    const session = insertParts(track, [part(0, 1, 0), part(4, 1, 0)]);
+    const session = stageParts(track, [part(0, 1, 0), part(4, 1, 0)]);
     session.remove();
     expect(track.parts.size).toBe(0);
     expect(session.alive).toBe(false);
   });
 
-  it('translate moves the placed parts and accumulates offset', () => {
+  it('translate accumulates the offset; commit places at the offset position', () => {
     const track = fakeTrack();
-    const session = insertParts(track, [part(0, 1, 0)]);
+    const session = stageParts(track, [part(0, 1, 0)]);
     expect(session.translate(4, 1, -4)).toBe(true);
-    expect([...track.parts.values()][0]).toMatchObject({ x: 4, y: 2, z: -4 });
     expect(session.offset).toEqual({ x: 4, y: 1, z: -4 });
+    expect(track.parts.size).toBe(0); // still staged
+    session.commit();
+    expect([...track.parts.values()][0]).toMatchObject({ x: 4, y: 2, z: -4 });
   });
 
-  it('refuses to translate below ground and leaves parts untouched', () => {
+  it('refuses to translate below ground', () => {
     const track = fakeTrack();
-    const session = insertParts(track, [part(0, 0, 0)]);
+    const session = stageParts(track, [part(0, 0, 0)]);
     expect(session.translate(0, -1, 0)).toBe(false);
-    expect([...track.parts.values()][0]).toMatchObject({ x: 0, y: 0, z: 0 });
     expect(session.offset).toEqual({ x: 0, y: 0, z: 0 });
   });
 
-  it('rolls back a partial placement when the game throws mid-batch', () => {
+  it('commit rolls back a partial placement and keeps the session alive', () => {
     const track = fakeTrack();
-    // Second part is below ground: whole insert must throw and leave nothing.
-    expect(() => insertParts(track, [part(0, 1, 0), part(4, -1, 0)])).toThrow(/below ground/);
+    // Second part is below ground: the whole commit must throw, place nothing,
+    // and leave the session alive so the user can move the model and retry.
+    const session = stageParts(track, [part(0, 1, 0), part(4, -1, 0)]);
+    expect(() => session.commit()).toThrow(/below ground/);
     expect(track.parts.size).toBe(0);
+    expect(session.alive).toBe(true);
+    // Raise the model out of the ground; the retry succeeds.
+    expect(session.translate(0, 1, 0)).toBe(true);
+    session.commit();
+    expect(track.parts.size).toBe(2);
   });
 
-  it('replaceParts swaps the placement but keeps the session translation', () => {
+  it('replaceParts swaps the staged list but keeps the session offset', () => {
     const track = fakeTrack();
-    const session = insertParts(track, [part(0, 1, 0)]);
+    const session = stageParts(track, [part(0, 1, 0)]);
     session.translate(4, 0, 0);
-    expect(session.replaceParts([part(0, 1, 0), part(0, 2, 0)])).toBe(true);
-    expect(track.parts.size).toBe(2);
+    session.replaceParts([part(0, 1, 0), part(0, 2, 0)]);
+    expect(session.count).toBe(2);
+    session.commit();
     // New parts ride the accumulated +4x offset.
     expect(new Set([...track.parts.values()].map((p) => `${p.x},${p.y}`))).toEqual(new Set(['4,1', '4,2']));
   });
 
-  it('restores the previous placement when the replacement fails', () => {
+  it('rotateY regenerates the staged list in place', () => {
     const track = fakeTrack();
-    const session = insertParts(track, [part(0, 1, 0)]);
-    expect(session.replaceParts([part(0, -5, 0)])).toBe(false);
-    expect(track.parts.size).toBe(1);
-    expect([...track.parts.values()][0]).toMatchObject({ x: 0, y: 1, z: 0 });
+    const session = stageParts(track, [part(0, 1, 0), part(4, 1, 0)]);
+    session.rotateY();
+    // Row along x became a row along z (min corner pinned).
+    expect(new Set(session.parts.map((p) => `${p.x},${p.z}`))).toEqual(new Set(['0,0', '0,4']));
+    expect(track.parts.size).toBe(0);
+  });
+
+  it('bounds include the session offset and follow translation', () => {
+    const track = fakeTrack();
+    const session = stageParts(track, [part(0, 0, 0), part(8, 2, 4)]);
+    expect(session.bounds).toEqual({ min: [0, 0, 0], max: [8, 2, 4] });
+    session.translate(4, 1, 0);
+    expect(session.bounds).toEqual({ min: [4, 1, 0], max: [12, 3, 4] });
+    session.remove();
+    expect(session.bounds).toBeNull();
   });
 });
 

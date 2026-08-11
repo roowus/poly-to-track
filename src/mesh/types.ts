@@ -2,6 +2,10 @@
 export interface TriangleMesh {
   readonly positions: Float32Array;
   readonly triangleCount: number;
+  /** Optional per-TRIANGLE color, 3 bytes (RGB 0-255) per triangle. Present
+   *  only when the source file carried color (OBJ vertex colors / MTL
+   *  materials, colored binary STL). */
+  readonly colors?: Uint8Array;
 }
 
 export interface Bounds {
