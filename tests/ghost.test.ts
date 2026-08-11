@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { PlacedPart } from '../src/codec/parts';
-import { createGhost, MAX_GHOST_BOXES } from '../src/game/ghost';
+import { createGhost, MAX_GHOST_BOXES, mergeGhostBoxes } from '../src/game/ghost';
 import type { GameRenderer } from '../src/game/track';
 
 // ---- the same minimal three.js stand-ins the gizmo tests use ----
@@ -95,18 +95,45 @@ describe('createGhost', () => {
     expect(createGhost(renderer, [part(0, 1, 0)])).toBeNull();
   });
 
-  it('adds one translucent vertex-colored mesh with a box per part', () => {
+  it('adds one translucent vertex-colored mesh with a box per merged run', () => {
     const { renderer, children } = rendererWithMesh();
-    const ghost = createGhost(renderer, [part(0, 1, 0), part(4, 1, 0)]);
+    // Different colors — un-mergeable, so exactly one box per part.
+    const ghost = createGhost(renderer, [part(0, 1, 0, 0), part(4, 1, 0, 1)]);
     expect(ghost).not.toBeNull();
     const mesh = ghostOf(children)!;
     expect(mesh).toBeDefined();
     expect(mesh.material.transparent).toBe(true);
     expect(mesh.material.vertexColors).toBe(true);
     expect(mesh.material.depthWrite).toBe(false);
-    // 2 parts × 36 verts × 3 floats
+    // 2 boxes × 36 verts × 3 floats
     expect(mesh.geometry.getAttribute('position')!.array.length).toBe(2 * 36 * 3);
     expect(mesh.geometry.getAttribute('color')!.array.length).toBe(2 * 36 * 3);
+  });
+
+  it('merges adjacent same-color parts into single cuboids (no ghost holes)', () => {
+    // A 3-wide × 2-tall same-color wall = ONE box; a stray different color stays its own.
+    const wall = [
+      part(0, 1, 0), part(4, 1, 0), part(8, 1, 0),
+      part(0, 2, 0), part(4, 2, 0), part(8, 2, 0),
+      part(20, 1, 0, 3),
+    ];
+    const boxes = mergeGhostBoxes(wall);
+    expect(boxes).toHaveLength(2);
+    const big = boxes.find((b) => b.color === 0)!;
+    expect(big).toMatchObject({ x0: 0, x1: 8, y0: 1, y1: 2, z0: 0, z1: 0 });
+  });
+
+  it('merged geometry covers every part — a full solid never samples', () => {
+    // 40×40×4 solid (6,400 parts, same color) must collapse WAY under the cap.
+    const solid: PlacedPart[] = [];
+    for (let y = 0; y < 4; y++) {
+      for (let z = 0; z < 40; z++) {
+        for (let x = 0; x < 40; x++) solid.push(part(x * 4, y, z * 4));
+      }
+    }
+    const boxes = mergeGhostBoxes(solid);
+    expect(boxes).toHaveLength(1);
+    expect(boxes[0]).toMatchObject({ x0: 0, x1: 156, y0: 0, y1: 3, z0: 0, z1: 156 });
   });
 
   it('setOffset moves the mesh in world units without touching the buffers', () => {
@@ -124,7 +151,8 @@ describe('createGhost', () => {
   it('setParts rewrites the buffers (rotation / rebuild path)', () => {
     const { renderer, children } = rendererWithMesh();
     const ghost = createGhost(renderer, [part(0, 1, 0)])!;
-    ghost.setParts([part(0, 1, 0), part(0, 2, 0), part(0, 3, 0)]);
+    // 3 different colors — un-mergeable, so 3 boxes.
+    ghost.setParts([part(0, 1, 0, 0), part(0, 2, 0, 1), part(0, 3, 0, 2)]);
     const mesh = ghostOf(children)!;
     expect(mesh.geometry.getAttribute('position')!.array.length).toBe(3 * 36 * 3);
     expect(mesh.visible).toBe(true);
@@ -132,8 +160,9 @@ describe('createGhost', () => {
 
   it('samples down beyond the box budget instead of allocating unbounded buffers', () => {
     const { renderer, children } = rendererWithMesh();
+    // Gapped positions defeat merging — worst case, one box per part.
     const many: PlacedPart[] = [];
-    for (let i = 0; i < MAX_GHOST_BOXES * 2; i++) many.push(part(i * 4, 1, 0));
+    for (let i = 0; i < MAX_GHOST_BOXES * 2; i++) many.push(part(i * 8, 1, 0));
     const ghost = createGhost(renderer, many);
     expect(ghost).not.toBeNull();
     const mesh = ghostOf(children)!;

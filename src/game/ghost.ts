@@ -18,12 +18,73 @@ import {
   type AttributeLike, type GeometryLike, type MaterialLike, type MeshLike, type Scavenged,
 } from './gizmo';
 
-/** Boxes drawn at most — beyond this the parts are sampled uniformly. Keeps
- *  the ghost's buffers ~17MB worst case instead of unbounded. */
+/** Boxes drawn at most — beyond this the MERGED boxes are sampled uniformly.
+ *  Keeps the ghost's buffers ~17MB worst case instead of unbounded. Parts are
+ *  greedy-merged into cuboids first (see mergeGhostBoxes), so this cap is a
+ *  box budget, not a part budget — even million-part solids fit with room to
+ *  spare and the ghost shows the FULL geometry, no sampling holes. */
 export const MAX_GHOST_BOXES = 20_000;
 
 const FLOATS_PER_BOX = 36 * 3;
 const GHOST_OPACITY = 0.55;
+/** Part grid spacing: a Block is 4×4 tiles in x/z, 1 unit in y. */
+const XZ_STEP = 4;
+
+export interface GhostBoxSpec {
+  /** Inclusive part-coordinate extents (tiles x/z, y-units) + color id. */
+  x0: number; x1: number; y0: number; y1: number; z0: number; z1: number;
+  color: number;
+}
+
+/**
+ * Greedy-merge parts into axis-aligned cuboids: runs along x, rows merged
+ * across z, slabs merged across y — same-color neighbors only, so every
+ * merged box is still drawable in one flat color. Solid builds collapse to a
+ * handful of slabs and hollow shells to O(surface) boxes, which is what lets
+ * `write()` draw full geometry instead of uniformly sampling parts (the old
+ * behavior — scaled-up models looked like Swiss cheese past 20k parts).
+ */
+export function mergeGhostBoxes(parts: readonly PlacedPart[]): GhostBoxSpec[] {
+  let boxes: GhostBoxSpec[] = [];
+  const sorted = [...parts].sort((a, b) =>
+    a.color - b.color || a.y - b.y || a.z - b.z || a.x - b.x);
+  // pass 1: runs along x
+  for (const p of sorted) {
+    const last = boxes[boxes.length - 1];
+    if (last && last.color === p.color && last.y0 === p.y && last.z0 === p.z && last.x1 + XZ_STEP === p.x) {
+      last.x1 = p.x;
+    } else {
+      boxes.push({ x0: p.x, x1: p.x, y0: p.y, y1: p.y, z0: p.z, z1: p.z, color: p.color });
+    }
+  }
+  // pass 2: identical x-runs merged across z
+  boxes.sort((a, b) => a.color - b.color || a.y0 - b.y0 || a.x0 - b.x0 || a.x1 - b.x1 || a.z0 - b.z0);
+  boxes = mergeAdjacent(boxes, (a, b) =>
+    a.color === b.color && a.y0 === b.y0 && a.x0 === b.x0 && a.x1 === b.x1 && a.z1 + XZ_STEP === b.z0,
+  (a, b) => { a.z1 = b.z1; });
+  // pass 3: identical x/z rectangles merged across y
+  boxes.sort((a, b) => a.color - b.color || a.x0 - b.x0 || a.x1 - b.x1 ||
+    a.z0 - b.z0 || a.z1 - b.z1 || a.y0 - b.y0);
+  boxes = mergeAdjacent(boxes, (a, b) =>
+    a.color === b.color && a.x0 === b.x0 && a.x1 === b.x1 &&
+    a.z0 === b.z0 && a.z1 === b.z1 && a.y1 + 1 === b.y0,
+  (a, b) => { a.y1 = b.y1; });
+  return boxes;
+}
+
+function mergeAdjacent(
+  sorted: GhostBoxSpec[],
+  canMerge: (a: GhostBoxSpec, b: GhostBoxSpec) => boolean,
+  merge: (a: GhostBoxSpec, b: GhostBoxSpec) => void,
+): GhostBoxSpec[] {
+  const out: GhostBoxSpec[] = [];
+  for (const b of sorted) {
+    const last = out[out.length - 1];
+    if (last && canMerge(last, b)) merge(last, b);
+    else out.push(b);
+  }
+  return out;
+}
 
 export interface Ghost {
   /** Move the whole ghost to the session offset (tiles / y-units). O(1). */
@@ -108,21 +169,23 @@ export function createGhost(renderer: GameRenderer, parts: readonly PlacedPart[]
 
   function write(list: readonly PlacedPart[]): void {
     if (disposed) return;
-    const step = Math.max(1, Math.ceil(list.length / MAX_GHOST_BOXES));
-    const boxes = Math.ceil(list.length / step);
+    const merged = mergeGhostBoxes(list);
+    // Merging normally lands FAR under the cap (solids collapse to slabs);
+    // uniform sampling only kicks in on pathological checkerboards.
+    const step = Math.max(1, Math.ceil(merged.length / MAX_GHOST_BOXES));
+    const boxes = Math.ceil(merged.length / step);
     const buf = ensureCapacity(kit!, Math.max(1, boxes));
     if (!buf) return;
     let o = 0;
-    for (let i = 0; i < list.length; i += step) {
-      const p = list[i]!;
-      const x = p.x * PART_SIZE, y = p.y * PART_SIZE, z = p.z * PART_SIZE;
+    for (let i = 0; i < merged.length; i += step) {
+      const m = merged[i]!;
       const co = o;
       o = pushBox(
         buf.pos, o,
-        x - XZ_HALF_SPAN, y, z - XZ_HALF_SPAN,
-        x + XZ_HALF_SPAN, y + PART_SIZE, z + XZ_HALF_SPAN,
+        m.x0 * PART_SIZE - XZ_HALF_SPAN, m.y0 * PART_SIZE, m.z0 * PART_SIZE - XZ_HALF_SPAN,
+        m.x1 * PART_SIZE + XZ_HALF_SPAN, (m.y1 + 1) * PART_SIZE, m.z1 * PART_SIZE + XZ_HALF_SPAN,
       );
-      const hex = hexById.get(p.color) ?? 0xb8b8b8;
+      const hex = hexById.get(m.color) ?? 0xb8b8b8;
       // Lift toward white so even the near-black game palette reads on screen.
       const r = Math.min(1, ((hex >> 16) & 255) / 255 + 0.25);
       const g = Math.min(1, ((hex >> 8) & 255) / 255 + 0.25);

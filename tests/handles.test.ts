@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { applyMat4, closestAxisT, rayBoxT, type Box, type Vec3 } from '../src/game/handles';
+import { applyMat4, closestAxisT, handleScale, rayBoxT, type Box, type Vec3 } from '../src/game/handles';
 
 describe('applyMat4', () => {
   it('identity leaves points untouched', () => {
@@ -41,6 +41,24 @@ describe('rayBoxT', () => {
   it('handles rays parallel to a slab (zero direction component)', () => {
     expect(rayBoxT([0, 0.5, -5], [0, 0, 1], box)).toBeCloseTo(4);
     expect(rayBoxT([0, 2, -5], [0, 0, 1], box)).toBeNull();
+  });
+});
+
+describe('handleScale', () => {
+  it('stays at 1 for small models — the base sizes already read well', () => {
+    expect(handleScale([5, 5, 5])).toBe(1);
+    expect(handleScale([25, 10, 10])).toBe(1);
+  });
+
+  it('grows with the model so handles hold screen size on big builds', () => {
+    // 100-block cube ≈ half-extent 250 world units → 10× thicker handles.
+    expect(handleScale([250, 250, 250])).toBeCloseTo(10);
+    // Driven by the LARGEST axis — a long thin build still gets big handles.
+    expect(handleScale([250, 5, 5])).toBeCloseTo(10);
+  });
+
+  it('caps so handles never dwarf the scene', () => {
+    expect(handleScale([10000, 10000, 10000])).toBe(12);
   });
 });
 

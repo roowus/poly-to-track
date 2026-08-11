@@ -5,8 +5,9 @@
  * exactly like Schematica's ghost preview. When the grid carries model colors
  * (and the toggle is on) each voxel is drawn in its own color.
  *
- * A green ground grid + “GROUND” label is drawn under the model so it's
- * obvious which way the build will sit on the track (y=0 = track floor).
+ * A green ground grid is drawn under the model so it's obvious which way the
+ * build will sit on the track (y=0 = track floor). One grid square = one
+ * voxel cell, so the squares shrink as the resolution slider goes up.
  */
 import type { VoxelGrid } from '../voxel/voxelize';
 
@@ -77,23 +78,29 @@ export function createVoxelPreview(width: number, height: number, doc: Document 
     };
     const gy = -midY; // model min-y sits at the ground
     const gExt = Math.max(midX, midZ) * 1.7 + 2;
-    const gStep = Math.max(2, Math.round(gExt / 4));
+    // One grid square = one voxel cell: lines fall on cell EDGES (centers sit
+    // at integer − mid, so edges sit at integer − mid − 0.5 per axis). At high
+    // resolutions one-cell squares go sub-pixel; step whole-cell multiples so
+    // the grid stays a grid instead of a solid wash (edges stay cell-aligned).
+    const gStep = Math.max(1, Math.ceil((4 * devicePixelRatio) / scale));
+    const edgePhase = (mid: number): number => {
+      const p = (-mid - 0.5) % gStep;
+      return p < 0 ? p + gStep : p;
+    };
+    const phaseX = edgePhase(midX);
+    const phaseZ = edgePhase(midZ);
     ctx.strokeStyle = 'rgba(96, 200, 120, 0.4)';
     ctx.lineWidth = 1 * devicePixelRatio;
     ctx.beginPath();
-    for (let g = -gExt; g <= gExt + 1e-6; g += gStep) {
-      ctx.moveTo(...proj(-gExt, gy, g));
-      ctx.lineTo(...proj(gExt, gy, g));
-      ctx.moveTo(...proj(g, gy, -gExt));
-      ctx.lineTo(...proj(g, gy, gExt));
+    for (let x = Math.ceil((-gExt - phaseX) / gStep) * gStep + phaseX; x <= gExt + 1e-6; x += gStep) {
+      ctx.moveTo(...proj(x, gy, -gExt));
+      ctx.lineTo(...proj(x, gy, gExt));
+    }
+    for (let z = Math.ceil((-gExt - phaseZ) / gStep) * gStep + phaseZ; z <= gExt + 1e-6; z += gStep) {
+      ctx.moveTo(...proj(-gExt, gy, z));
+      ctx.lineTo(...proj(gExt, gy, z));
     }
     ctx.stroke();
-    // Label the plane at its near corner so there's zero ambiguity.
-    const lbl = proj(gExt, gy, gExt);
-    ctx.fillStyle = 'rgba(120, 230, 150, 0.85)';
-    ctx.font = `bold ${11 * devicePixelRatio}px system-ui, sans-serif`;
-    ctx.textAlign = 'left';
-    ctx.fillText('▼ GROUND', lbl[0] - 34 * devicePixelRatio, lbl[1] + 14 * devicePixelRatio);
 
     // Project every filled voxel; sample uniformly if over the draw budget.
     const total = grid.nx * grid.ny * grid.nz;

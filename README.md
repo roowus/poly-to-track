@@ -47,7 +47,7 @@ editor.
 | Control | What it does |
 | --- | --- |
 | **Load STL / OBJ** | Parses the file (binary + ASCII STL; OBJ with quads/negative indices) |
-| Preview canvas | Drag to orbit the voxelized model — the green grid + ▼ GROUND label is the track floor the build will sit on |
+| Preview canvas | Drag to orbit the voxelized model — the green grid is the track floor, one grid square = one block cell at the current resolution |
 | **Resolution** (4–256) | Longest model axis maps to this many blocks |
 | **Fill interior** | Flood-fill the inside (off by default — hollow shells are far fewer parts) |
 | **Rotate X/Y/Z** | Any angle (5° steps), applied to the mesh before voxelization — a 45° build is a true diagonal voxelization, not sheared blocks |
@@ -81,10 +81,12 @@ slider follows), and these keys work too:
 | **Enter** | Apply — the parts become a normal part of your track |
 | **Delete** | Cancel — drop the ghost, nothing was placed |
 
-Applied parts are ordinary track parts: the editor's own tools (and its
-undo for *your* subsequent edits) treat them like anything you placed by
-hand. The apply itself isn't on the editor's undo stack — Cancel before
-applying if you change your mind.
+Applied parts are ordinary track parts: the editor's own tools treat them
+like anything you placed by hand — and the apply itself is undoable. Press
+**Ctrl+Z** (or the editor's ↩ undo button) right after applying and the
+whole insert lifts back out; **Ctrl+Shift+Z / Ctrl+Y** (or ↪ redo) puts it
+back. The moment you edit the track by hand the insert stops being the
+newest change, so from then on undo/redo belong to the editor as usual.
 
 There is no hard part limit. The block counter turns amber past 100,000
 parts as a heads-up that the game will visibly chug and track codes get

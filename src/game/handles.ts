@@ -94,12 +94,29 @@ const AXIS_DIRS: readonly Vec3[] = [[1, 0, 0], [0, 1, 0], [0, 0, 1]];
 /** Blender's axis colors, slightly lifted for the game's dark scenes. */
 const AXIS_COLORS: readonly Vec3[] = [[1, 0.32, 0.32], [0.42, 0.95, 0.42], [0.42, 0.62, 1]];
 const UNIFORM_COLOR: Vec3 = [1, 1, 1];
+// Base handle dimensions (world units), sized for a few-block model. draw()
+// multiplies them by a factor derived from the model's extent — fixed-size
+// handles disappear to sub-pixel slivers around big builds, which read as
+// "the handles aren't there" when the camera is zoomed out to fit the model.
 const SHAFT_R = 1.1;
 const HEAD_R = 3.4;
 const TIP_R = 2.8;
 const FRAME_R = 1.0;
 const CENTER_R = 3.6;
 const PICK_PAD = 2.5; // inflate hitboxes — handles are thin
+const ARROW_GAP = 3;   // gap between the model and the arrow shaft
+const ARROW_LEN = 26;  // shaft length past the model
+const TIP_OFFSET = 13; // scale tip past the arrow head
+const FRAME_MARGIN = 12; // rotate frame outside the model
+
+/** Thickness/offset multiplier for a model with the given half-extents:
+ *  1 for anything small, growing with the largest half-extent so the handles
+ *  hold a consistent share of the screen when the camera zooms out to a big
+ *  build. Exported for tests. */
+export function handleScale(half: Vec3): number {
+  const maxHalf = Math.max(half[0], half[1], half[2]);
+  return Math.min(12, Math.max(1, maxHalf / 25));
+}
 /** 3 axes × (arrow shaft + arrow head + scale tip + 4 frame edges) + center. */
 const MAX_BOXES = 3 * 7 + 1;
 const FLOATS = MAX_BOXES * 36 * 3;
@@ -276,21 +293,25 @@ export function createTransformHandles(
     center = [(x0 + x1) / 2, (y0 + y1) / 2, (z0 + z1) / 2];
     const half: Vec3 = [(x1 - x0) / 2, (y1 - y0) / 2, (z1 - z0) / 2];
 
+    const hs = handleScale(half);
     defs = [];
     for (let a = 0 as HandleAxis; a < 3; a = (a + 1) as HandleAxis) {
-      const len = half[a]! + 26;
+      const len = half[a]! + ARROW_LEN * hs;
       defs.push({
         kind: 'move', axis: a, color: AXIS_COLORS[a]!,
-        boxes: [axisBox(center, a, half[a]! + 3, len, SHAFT_R), tipBox(center, a, len + 3, HEAD_R)],
+        boxes: [
+          axisBox(center, a, half[a]! + ARROW_GAP * hs, len, SHAFT_R * hs),
+          tipBox(center, a, len + ARROW_GAP * hs, HEAD_R * hs),
+        ],
       });
-      defs.push({ kind: 'scale', axis: a, color: AXIS_COLORS[a]!, boxes: [tipBox(center, a, len + 13, TIP_R)] });
+      defs.push({ kind: 'scale', axis: a, color: AXIS_COLORS[a]!, boxes: [tipBox(center, a, len + TIP_OFFSET * hs, TIP_R * hs)] });
       const [u, v] = PERP[a]!;
       defs.push({
         kind: 'rotate', axis: a, color: AXIS_COLORS[a]!,
-        boxes: frameBoxes(center, a, Math.max(half[u]!, half[v]!) + 12, FRAME_R),
+        boxes: frameBoxes(center, a, Math.max(half[u]!, half[v]!) + FRAME_MARGIN * hs, FRAME_R * hs),
       });
     }
-    defs.push({ kind: 'scale', axis: -1, color: UNIFORM_COLOR, boxes: [tipBox(center, 0, 0, CENTER_R)] });
+    defs.push({ kind: 'scale', axis: -1, color: UNIFORM_COLOR, boxes: [tipBox(center, 0, 0, CENTER_R * hs)] });
 
     let o = 0;
     for (const d of defs) for (const box of d.boxes) o = pushBox(positions, o, ...box);

@@ -28,8 +28,9 @@ import { toExportString } from '../codec/encode';
 import { createGhost, type Ghost } from '../game/ghost';
 import { createGizmo, type Gizmo } from '../game/gizmo';
 import { createTransformHandles, type HandlesHost, type TransformHandles } from '../game/handles';
-import { stageParts, type InsertSession } from '../game/insert';
+import { stageParts, translateParts, type InsertSession } from '../game/insert';
 import { findGameWindow, getCapturedRenderer, getCapturedTrack, pickFreeOffsetCells } from '../game/track';
+import { createUndoBridge, type UndoBridge } from '../game/undo';
 import { parseObj } from '../mesh/obj';
 import { parseStl } from '../mesh/stl';
 import { applyTransform, IDENTITY, type MeshTransform } from '../mesh/transform';
@@ -117,10 +118,10 @@ const PANEL_CSS = `
   clip-path: polygon(0 0, 100% 0, calc(100% - 12px) 100%, 0 100%);
 }
 #${PANEL_ID} .ptt-body {
-  padding: 10px;
+  padding: 14px 16px 16px;
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 12px;
   overflow-y: auto;
   min-height: 0;
   scrollbar-width: thin;
@@ -150,14 +151,48 @@ const PANEL_CSS = `
   text-transform: uppercase;
   letter-spacing: 0.06em;
   opacity: 0.75;
-  margin-top: 2px;
+  margin-top: 6px;
 }
 #${PANEL_ID} .ptt-note { font-size: 17px; opacity: 0.75; min-height: 18px; }
 #${PANEL_ID} .ptt-status { font-size: 18px; min-height: 19px; }
-#${PANEL_ID} .ptt-row { display: flex; gap: 5px; }
+#${PANEL_ID} .ptt-row { display: flex; gap: 8px; flex-wrap: wrap; }
 #${PANEL_ID} .ptt-row > .ptt-btn { flex: 1; text-align: center; }
-#${PANEL_ID} .ptt-slider-top { display: flex; justify-content: space-between; font-size: 20px; }
-#${PANEL_ID} input[type="range"] { width: 100%; height: 24px; }
+#${PANEL_ID} .ptt-slider-top { display: flex; justify-content: space-between; font-size: 18px; }
+#${PANEL_ID} input[type="range"] {
+  width: 100%;
+  height: 14px;
+  margin: 0;
+  appearance: none;
+  -webkit-appearance: none;
+  background: transparent;
+  cursor: pointer;
+}
+#${PANEL_ID} input[type="range"]::-webkit-slider-runnable-track {
+  height: 6px;
+  background-color: var(--button-color, #112052);
+  clip-path: polygon(0 0, 100% 0, calc(100% - 4px) 100%, 0 100%);
+}
+#${PANEL_ID} input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 12px;
+  height: 18px;
+  margin-top: -6px;
+  background-color: var(--text-color, #fff);
+  clip-path: polygon(0 0, 100% 0, calc(100% - 4px) 100%, 0 100%);
+}
+#${PANEL_ID} input[type="range"]::-moz-range-track {
+  height: 6px;
+  background-color: var(--button-color, #112052);
+  clip-path: polygon(0 0, 100% 0, calc(100% - 4px) 100%, 0 100%);
+}
+#${PANEL_ID} input[type="range"]::-moz-range-thumb {
+  width: 12px;
+  height: 18px;
+  border: none;
+  border-radius: 0;
+  background-color: var(--text-color, #fff);
+  clip-path: polygon(0 0, 100% 0, calc(100% - 4px) 100%, 0 100%);
+}
 #${PANEL_ID} .ptt-swatch {
   width: 30px; height: 30px;
   border: 2px solid var(--surface-color, #28346a);
@@ -166,8 +201,31 @@ const PANEL_CSS = `
 }
 #${PANEL_ID} .ptt-swatch.selected { border-color: var(--text-color, #fff); box-shadow: inset 0 0 5px #fff; }
 #${PANEL_ID} canvas { background: var(--surface-tertiary-color, #192042); }
-#${PANEL_ID} label { font-size: 20px; display: flex; gap: 8px; align-items: center; cursor: pointer; }
-#${PANEL_ID} input[type="checkbox"] { width: 20px; height: 20px; accent-color: var(--surface-color, #28346a); }
+#${PANEL_ID} label { font-size: 20px; display: flex; gap: 10px; align-items: center; cursor: pointer; }
+#${PANEL_ID} input[type="checkbox"] {
+  appearance: none;
+  -webkit-appearance: none;
+  width: 22px;
+  height: 22px;
+  margin: 0;
+  flex: none;
+  cursor: pointer;
+  background-color: var(--button-color, #112052);
+  clip-path: polygon(0 0, 100% 0, calc(100% - 5px) 100%, 0 100%);
+  display: grid;
+  place-content: center;
+}
+#${PANEL_ID} input[type="checkbox"]:hover { background-color: var(--button-hover-color, #334b77); }
+#${PANEL_ID} input[type="checkbox"]::before {
+  content: "";
+  width: 12px;
+  height: 12px;
+  transform: scale(0);
+  background-color: var(--text-color, #fff);
+  clip-path: polygon(14% 44%, 0 65%, 50% 100%, 100% 16%, 80% 0%, 43% 62%);
+}
+#${PANEL_ID} input[type="checkbox"]:checked::before { transform: scale(1); }
+#${PANEL_ID} input[type="checkbox"]:disabled { background-color: var(--button-disabled-color, #313d53); cursor: default; }
 #${TOOLBAR_ID} {
   position: absolute;
   left: 50%;
@@ -210,6 +268,10 @@ export function createPanel(api: TspmlApi): Panel {
   let gizmo: Gizmo | null = null;
   let ghost: Ghost | null = null;
   let handles: TransformHandles | null = null;
+  /** Undo/redo bridge for APPLIED batches (the editor's own stack can't see
+   *  them — TSPML#87); recreated per game window. */
+  let undoBridge: UndoBridge | null = null;
+  let undoWindow: Window | null = null;
   /** Pose snapshot at handle-drag start — drag deltas are TOTALS. */
   let dragPose: ModelPose | null = null;
   /** Editor presence last poll — a true→false edge auto-closes the panel. */
@@ -343,25 +405,44 @@ export function createPanel(api: TspmlApi): Panel {
 
   function endSession(how: 'apply' | 'remove'): void {
     if (session?.alive && how === 'apply') {
+      // Final coordinates BEFORE commit clears the session — the undo bridge
+      // needs them to revert/re-apply this batch on the editor's undo/redo.
+      const applied = translateParts(
+        session.parts, session.offset.x, session.offset.y, session.offset.z,
+      );
       try {
-        session.commit(); // the ONE real write into the track
+        const s = session;
+        // Commit through the bridge so our own writes don't read as the
+        // user's hand edits (which would wipe the undo history).
+        if (undoBridge) undoBridge.runInternal(() => s.commit());
+        else s.commit(); // the ONE real write into the track
       } catch (err) {
         setStatus(`✗ ${err instanceof Error ? err.message : String(err)} — move the model and try again`, true);
         return; // session stays alive, ghost stays up
       }
+      undoBridge?.recordBatch(applied);
     } else {
       session?.remove();
     }
     session = null;
     clearSessionUi();
-    setStatus(how === 'apply' ? '✓ Applied — the parts are part of the track now' : 'Canceled — nothing was placed.', false);
+    setStatus(
+      how === 'apply'
+        ? '✓ Applied — the parts are part of the track now (the game’s undo button takes them back)'
+        : 'Canceled — nothing was placed.',
+      false,
+    );
   }
 
-  /** Drop a session whose game document (and track) no longer exists. */
+  /** Drop a session whose game document (and track) no longer exists. Also
+   *  the end of undo history — the edited track left the screen with it. */
   function abandonSession(): void {
     session?.remove();
     session = null;
     clearSessionUi();
+    undoBridge?.dispose();
+    undoBridge = null;
+    undoWindow = null;
   }
 
   // ---------- UI construction (rebuilt per game document) ----------
@@ -680,6 +761,13 @@ export function createPanel(api: TspmlApi): Panel {
     if (!track) {
       setStatus('No open editor found — open the track editor first, then try again.', true);
       return;
+    }
+    // One bridge per game window — it survives session end so Applied batches
+    // stay undoable, and rebuilds after frame reloads (new window = new one).
+    if (w && (undoWindow !== w || !undoBridge)) {
+      undoBridge?.dispose();
+      undoBridge = createUndoBridge(track, w);
+      undoWindow = w;
     }
     try {
       sessionBaseOffset = pickFreeOffsetCells(track);
