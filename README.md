@@ -48,8 +48,10 @@ press **P**. The panel lives inside the game's UI and follows its styling.
 | **⤓ Insert into editor** | Places the model into the open editor and enters transform mode |
 | **Save as track** | Secondary path: encodes + registers a standalone track |
 
-While a model is inserted (transform mode), the panel's buttons and these
-keys drive it — the resolution/scale sliders keep working live too:
+While a model is inserted (transform mode), a Blender-style orange selection
+frame is drawn around it in the game viewport (it reads through terrain, so
+you always see where the model sits), and the panel's buttons and these keys
+drive it — the resolution/scale sliders keep working live too:
 
 | Key | Action |
 | --- | --- |
@@ -85,6 +87,17 @@ The capture mixin (`mixins.json`) anchors on two error strings that exist
 only inside the track class's `setPart` and stamps the instance on a global
 the mod reads — the editor calls `setPart` for its initial Start part the
 moment it opens, so the reference is always fresh.
+
+A second mixin captures the game's renderer wrapper the same way (anchored
+on its unique WebGL-failure string, hooked at `setCamera`, which the editor
+calls with its camera on entry). That hands the mod the live three.js scene,
+where `src/game/gizmo.ts` draws the selection frame. The game doesn't export
+the three.js namespace, so the gizmo *scavenges* constructors off a rendered
+mesh in the scene — walking the mesh's prototype chain to find the plain
+`Mesh` base class (the game's own meshes are instanced subclasses that
+ignore constructor args) and allocating its vertex buffer with the game
+realm's `Float32Array` (a portal-realm typed array fails three's
+`instanceof` check inside the iframe).
 
 The `PolyTrack2` codec in `src/codec/` is a byte-exact mirror of the game's
 own encoder (verified round-trip against a real community track in the

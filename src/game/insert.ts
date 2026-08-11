@@ -2,9 +2,9 @@
  * Live-editor insertion session: place the built parts into the captured game
  * track, then keep enough state to move / rotate / re-place / remove them
  * until the user commits — the Blender-style "object is selected until you
- * click away" phase, minus real gizmos (the editor's three.js scene belongs to
- * an untransformed lazy chunk, so we drive the game's own part API instead of
- * drawing handles inside its renderer).
+ * click away" phase. The selection frame drawn around the placed parts lives
+ * in gizmo.ts (via the renderer-capture mixin); this module only exposes the
+ * session's tile-space `bounds` for it.
  *
  * The editor's undo stack is NOT integrated (it lives in the same lazy chunk);
  * the session's own remove() is the undo for everything it placed.
@@ -44,6 +44,11 @@ export function translateParts(
 export interface InsertSession {
   /** Number of parts currently placed. */
   readonly count: number;
+  /** Tile-space bounds of the placed part origins, or null when empty. */
+  readonly bounds: {
+    readonly min: readonly [number, number, number];
+    readonly max: readonly [number, number, number];
+  } | null;
   /** Move by tiles/units. Refuses (returns false) if it would sink below ground. */
   translate(dx: number, dy: number, dz: number): boolean;
   /** Quarter-turn about Y, in place. */
@@ -118,6 +123,17 @@ export function insertParts(track: GameTrack, parts: readonly PlacedPart[]): Ins
   return {
     get count() { return placed.length; },
     get alive() { return alive; },
+    get bounds() {
+      if (placed.length === 0) return null;
+      const min: [number, number, number] = [Infinity, Infinity, Infinity];
+      const max: [number, number, number] = [-Infinity, -Infinity, -Infinity];
+      for (const p of placed) {
+        if (p.x < min[0]) min[0] = p.x; if (p.x > max[0]) max[0] = p.x;
+        if (p.y < min[1]) min[1] = p.y; if (p.y > max[1]) max[1] = p.y;
+        if (p.z < min[2]) min[2] = p.z; if (p.z > max[2]) max[2] = p.z;
+      }
+      return { min, max };
+    },
     offset,
 
     translate(dx, dy, dz) {

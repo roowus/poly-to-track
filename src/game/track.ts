@@ -16,6 +16,7 @@
  */
 
 export const TRACK_CAPTURE_GLOBAL = '__polyToTrackTrack';
+export const RENDERER_CAPTURE_GLOBAL = '__polyToTrackRenderer';
 
 /** The game's 2D bounds vectors are three.js Vector2s: `y` holds the z tile. */
 export interface TrackBounds {
@@ -83,6 +84,43 @@ function looksLikeGame(w: Window): boolean {
 export function getCapturedTrack(gameWindow: Window | null): GameTrack | null {
   if (!gameWindow) return null;
   return asGameTrack((gameWindow as unknown as Record<string, unknown>)[TRACK_CAPTURE_GLOBAL]);
+}
+
+/**
+ * The slice of the game's renderer wrapper this mod uses for in-viewport
+ * gizmos. Captured by the second mixin (anchor "Failed to create WebGL
+ * renderer", method `setCamera` — the editor calls it with its camera on
+ * entry). `scene` is the live three.js Scene the game renders every frame, so
+ * anything we `add()` to it shows up in the viewport with zero extra plumbing.
+ */
+export interface GameRenderer {
+  readonly scene: SceneLike;
+  readonly camera: unknown;
+}
+
+/** Minimal structural view of a three.js Object3D/Scene we rely on. */
+export interface SceneLike {
+  readonly isObject3D: boolean;
+  add(obj: unknown): unknown;
+  remove(obj: unknown): unknown;
+}
+
+export function asGameRenderer(v: unknown): GameRenderer | null {
+  if (typeof v !== 'object' || v === null) return null;
+  const r = v as { scene?: { isObject3D?: unknown; add?: unknown; remove?: unknown } };
+  const s = r.scene;
+  const ok =
+    typeof s === 'object' && s !== null &&
+    s.isObject3D === true &&
+    typeof s.add === 'function' &&
+    typeof s.remove === 'function';
+  return ok ? (v as GameRenderer) : null;
+}
+
+/** The mixin-captured renderer wrapper on `gameWindow`, shape-checked. */
+export function getCapturedRenderer(gameWindow: Window | null): GameRenderer | null {
+  if (!gameWindow) return null;
+  return asGameRenderer((gameWindow as unknown as Record<string, unknown>)[RENDERER_CAPTURE_GLOBAL]);
 }
 
 /**

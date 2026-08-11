@@ -16,8 +16,9 @@
  */
 import { COLOR_SWATCHES } from '../codec/parts';
 import { toExportString } from '../codec/encode';
+import { createGizmo, type Gizmo } from '../game/gizmo';
 import { insertParts, type InsertSession } from '../game/insert';
-import { findGameWindow, getCapturedTrack, pickFreeOffsetCells } from '../game/track';
+import { findGameWindow, getCapturedRenderer, getCapturedTrack, pickFreeOffsetCells } from '../game/track';
 import { parseObj } from '../mesh/obj';
 import { parseStl } from '../mesh/stl';
 import { applyTransform, IDENTITY, type MeshTransform } from '../mesh/transform';
@@ -141,6 +142,7 @@ export function createPanel(api: TspmlApi): Panel {
   let session: InsertSession | null = null;
   let sessionBaseOffset: [number, number, number] = [0, 0, 0];
   let sessionKeyWindow: Window | null = null;
+  let gizmo: Gizmo | null = null;
 
   // ---- per-build DOM refs ----
   let root: HTMLDivElement | null = null;
@@ -166,17 +168,32 @@ export function createPanel(api: TspmlApi): Panel {
     const s = session;
     if (!s?.alive) return false;
     switch (code) {
-      case 'ArrowLeft': s.translate(-4, 0, 0); return true;
-      case 'ArrowRight': s.translate(4, 0, 0); return true;
-      case 'ArrowUp': s.translate(0, 0, -4); return true;
-      case 'ArrowDown': s.translate(0, 0, 4); return true;
-      case 'PageUp': s.translate(0, 1, 0); return true;
-      case 'PageDown': s.translate(0, -1, 0); return true;
-      case 'KeyR': s.rotateY(); return true;
+      case 'ArrowLeft': moveSession(-4, 0, 0); return true;
+      case 'ArrowRight': moveSession(4, 0, 0); return true;
+      case 'ArrowUp': moveSession(0, 0, -4); return true;
+      case 'ArrowDown': moveSession(0, 0, 4); return true;
+      case 'PageUp': moveSession(0, 1, 0); return true;
+      case 'PageDown': moveSession(0, -1, 0); return true;
+      case 'KeyR': rotateSession(); return true;
       case 'Enter': endSession('apply'); return true;
       case 'Delete': case 'Backspace': endSession('remove'); return true;
       default: return false;
     }
+  }
+
+  function moveSession(dx: number, dy: number, dz: number): void {
+    session?.translate(dx, dy, dz);
+    syncGizmo();
+  }
+
+  function rotateSession(): void {
+    session?.rotateY();
+    syncGizmo();
+  }
+
+  /** Track the selection frame to the session's current bounds. */
+  function syncGizmo(): void {
+    gizmo?.update(session?.alive ? session.bounds : null);
   }
 
   function startSessionKeys(w: Window): void {
@@ -196,6 +213,8 @@ export function createPanel(api: TspmlApi): Panel {
       else session.remove();
       session = null;
     }
+    gizmo?.dispose();
+    gizmo = null;
     stopSessionKeys();
     if (transformBox) transformBox.style.display = 'none';
     if (insertBtn) insertBtn.disabled = grid === null || grid.filledCount === 0;
@@ -321,17 +340,17 @@ export function createPanel(api: TspmlApi): Panel {
     const moveRow1 = doc.createElement('div');
     moveRow1.className = 'ptt-row';
     moveRow1.append(
-      btn(doc, '◀ X', () => session?.translate(-4, 0, 0)),
-      btn(doc, 'X ▶', () => session?.translate(4, 0, 0)),
-      btn(doc, '▲ Z', () => session?.translate(0, 0, -4)),
-      btn(doc, 'Z ▼', () => session?.translate(0, 0, 4)),
+      btn(doc, '◀ X', () => moveSession(-4, 0, 0)),
+      btn(doc, 'X ▶', () => moveSession(4, 0, 0)),
+      btn(doc, '▲ Z', () => moveSession(0, 0, -4)),
+      btn(doc, 'Z ▼', () => moveSession(0, 0, 4)),
     );
     const moveRow2 = doc.createElement('div');
     moveRow2.className = 'ptt-row';
     moveRow2.append(
-      btn(doc, 'Up', () => session?.translate(0, 1, 0)),
-      btn(doc, 'Down', () => session?.translate(0, -1, 0)),
-      btn(doc, '⟳ 90°', () => session?.rotateY()),
+      btn(doc, 'Up', () => moveSession(0, 1, 0)),
+      btn(doc, 'Down', () => moveSession(0, -1, 0)),
+      btn(doc, '⟳ 90°', () => rotateSession()),
     );
     const endRow = doc.createElement('div');
     endRow.className = 'ptt-row';
@@ -409,6 +428,7 @@ export function createPanel(api: TspmlApi): Panel {
     if (session?.alive && grid) {
       try {
         session.replaceParts(buildParts(grid, sessionBuildOptions()));
+        syncGizmo();
       } catch (err) {
         setStatus(`⚠ ${err instanceof Error ? err.message : String(err)}`, true);
       }
@@ -446,6 +466,12 @@ export function createPanel(api: TspmlApi): Panel {
       if (transformBox) transformBox.style.display = 'flex';
       if (insertBtn) insertBtn.disabled = true;
       if (w) startSessionKeys(w);
+      // Blender-style selection frame in the game viewport (needs the
+      // renderer capture; harmless to skip when it's absent).
+      const renderer = getCapturedRenderer(w);
+      gizmo?.dispose();
+      gizmo = renderer ? createGizmo(renderer) : null;
+      syncGizmo();
       setStatus(`Inserted ${session.count.toLocaleString()} parts — move/rotate, then Apply.`, false);
     } catch (err) {
       session = null;
@@ -492,6 +518,8 @@ export function createPanel(api: TspmlApi): Panel {
     dispose() {
       clearTimeout(revoxTimer);
       if (session?.alive) session.commit();
+      gizmo?.dispose();
+      gizmo = null;
       stopSessionKeys();
       preview?.dispose();
       root?.remove();

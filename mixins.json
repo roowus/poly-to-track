@@ -1,5 +1,5 @@
 {
-  "$comment": "TSPML mixin: capture the live track instance. The track class (main bundle) is the only module containing both error literals; every editor session places its initial Start part through setPart the moment it opens, so the capture always holds the OPEN editor's track (or the last play session's). 'before' rather than 'after' so the capture lands even when setPart throws (e.g. below-ground).",
+  "$comment": "TSPML mixins: capture the live track instance and the renderer wrapper. The track class (main bundle) is the only module containing both error literals; every editor session places its initial Start part through setPart the moment it opens, so the capture always holds the OPEN editor's track (or the last play session's). The renderer wrapper (also main bundle, sole owner of the 'Failed to create WebGL renderer' literal) exposes `get scene()` / `get camera()`; the editor calls setCamera on entry, so capturing there hands the mod a live three.js scene for in-viewport gizmos. 'before' rather than 'after' so the captures land even when the patched method throws.",
   "patches": [
     {
       "op": "before",
@@ -10,6 +10,16 @@
         "selector": { "kind": "method", "name": "setPart" }
       },
       "inject": "try { if (typeof window !== 'undefined') { window.__polyToTrackTrack = this; } } catch (_e) {}"
+    },
+    {
+      "op": "before",
+      "target": {
+        "anchor": {
+          "literals": ["Failed to create WebGL renderer: "]
+        },
+        "selector": { "kind": "method", "name": "setCamera" }
+      },
+      "inject": "try { if (typeof window !== 'undefined') { window.__polyToTrackRenderer = this; } } catch (_e) {}"
     }
   ]
 }

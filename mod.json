@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "poly-to-track",
   "name": "Poly To Track",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Import 3D files (STL/OBJ) and build them as PolyTrack block builds — insert into the open editor with move/rotate controls, or save as a track. Schematica for PolyTrack.",
   "entrypoint": "dist/entrypoint.js",
   "mixins": [{ "config": "mixins.json", "environment": "web" }],
