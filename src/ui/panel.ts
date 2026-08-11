@@ -160,7 +160,7 @@ const PANEL_CSS = `
 #${PANEL_ID} .ptt-slider-top { display: flex; justify-content: space-between; font-size: 18px; }
 #${PANEL_ID} input[type="range"] {
   width: 100%;
-  height: 14px;
+  height: 22px;
   margin: 0;
   appearance: none;
   -webkit-appearance: none;
@@ -174,11 +174,11 @@ const PANEL_CSS = `
 }
 #${PANEL_ID} input[type="range"]::-webkit-slider-thumb {
   -webkit-appearance: none;
-  width: 12px;
-  height: 18px;
-  margin-top: -6px;
+  width: 16px;
+  height: 22px;
+  margin-top: -8px;
   background-color: var(--text-color, #fff);
-  clip-path: polygon(0 0, 100% 0, calc(100% - 4px) 100%, 0 100%);
+  clip-path: polygon(0 0, 100% 0, calc(100% - 5px) 100%, 0 100%);
 }
 #${PANEL_ID} input[type="range"]::-moz-range-track {
   height: 6px;
@@ -186,12 +186,12 @@ const PANEL_CSS = `
   clip-path: polygon(0 0, 100% 0, calc(100% - 4px) 100%, 0 100%);
 }
 #${PANEL_ID} input[type="range"]::-moz-range-thumb {
-  width: 12px;
-  height: 18px;
+  width: 16px;
+  height: 22px;
   border: none;
   border-radius: 0;
   background-color: var(--text-color, #fff);
-  clip-path: polygon(0 0, 100% 0, calc(100% - 4px) 100%, 0 100%);
+  clip-path: polygon(0 0, 100% 0, calc(100% - 5px) 100%, 0 100%);
 }
 #${PANEL_ID} .ptt-swatch {
   width: 30px; height: 30px;
