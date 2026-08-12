@@ -50,8 +50,12 @@ editor.
 | Preview canvas | Drag to orbit the voxelized model — the green grid is the track floor, one grid square = one block cell at the current resolution |
 | **Resolution** (4–256) | Longest model axis maps to this many blocks |
 | **Fill interior** | Flood-fill the inside (off by default — hollow shells are far fewer parts) |
-| **Rotate X/Y/Z** | Any angle (5° steps), applied to the mesh before voxelization — a 45° build is a true diagonal voxelization, not sheared blocks |
+| **Rotate X/Y/Z** | Any angle (drag snaps to 5°), applied to the mesh before voxelization — a 45° build is a true diagonal voxelization, not sheared blocks |
 | **Scale** | ×0.1 – ×8 — block size stays constant, so ×2 really is a bigger build with more blocks, not the same blocks stretched |
+
+Every slider's number is a button — **click it to type an exact value**
+(37°, ×1.55…), free of the drag snap. Enter or clicking away commits,
+Escape cancels.
 | **Use the model's own colors** | Maps OBJ vertex colors / STL facet colors per block onto the game palette (interior blocks inherit the nearest surface color) |
 | **Block color** | Fallback / flat color: Default + the game's 9 custom block colors |
 | **⤓ Insert into editor** | Stages the model as a viewport ghost and enters transform mode |

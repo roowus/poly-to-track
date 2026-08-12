@@ -30,7 +30,7 @@ import { createGizmo, type Gizmo } from '../game/gizmo';
 import { createTransformHandles, type HandlesHost, type TransformHandles } from '../game/handles';
 import { stageParts, translateParts, type InsertSession } from '../game/insert';
 import { findGameWindow, getCapturedRenderer, getCapturedTrack, pickFreeOffsetCells } from '../game/track';
-import { createUndoBridge, type UndoBridge } from '../game/undo';
+import { createUndoBridge, isTypingTarget, type UndoBridge } from '../game/undo';
 import { parseObj } from '../mesh/obj';
 import { parseStl } from '../mesh/stl';
 import { applyTransform, IDENTITY, type MeshTransform } from '../mesh/transform';
@@ -39,6 +39,7 @@ import { buildParts, PARTS_WARNING, type BuildOptions } from '../voxel/build';
 import { voxelize, type VoxelGrid } from '../voxel/voxelize';
 import type { TspmlApi } from '../tspml-api';
 import { createVoxelPreview, type VoxelPreview } from './preview';
+import { parseTypedValue } from './slider-value';
 
 const PANEL_ID = 'poly-to-track-panel';
 const TOOLBAR_ID = 'poly-to-track-toolbar';
@@ -56,8 +57,10 @@ const STYLE_ID = 'poly-to-track-style';
 // state, and `solid` now defaults OFF — key bump re-defaults old stores.
 const STORAGE_KEY = 'poly-to-track.settings.v2';
 /** How often the launcher button checks it still sits in the right host
- *  (game documents and the editor UI are torn down and rebuilt). */
-const LAUNCHER_POLL_MS = 1500;
+ *  (game documents and the editor UI are torn down and rebuilt). The check is
+ *  two querySelectors — cheap enough to run fast, so the button appears
+ *  as soon as the editor does instead of up to 1.5s later. */
+const LAUNCHER_POLL_MS = 250;
 /** Scale holds BLOCK size constant and grows the voxel resolution instead
  *  (uniform mesh scaling alone is a no-op under longest-axis normalization).
  *  The cap bounds grid memory: 256 → ≤ 256×1024×256 cells worst case. */
@@ -157,7 +160,28 @@ const PANEL_CSS = `
 #${PANEL_ID} .ptt-status { font-size: 18px; min-height: 19px; }
 #${PANEL_ID} .ptt-row { display: flex; gap: 8px; flex-wrap: wrap; }
 #${PANEL_ID} .ptt-row > .ptt-btn { flex: 1; text-align: center; }
-#${PANEL_ID} .ptt-slider-top { display: flex; justify-content: space-between; font-size: 18px; }
+#${PANEL_ID} .ptt-slider-top { display: flex; justify-content: space-between; align-items: center; font-size: 18px; }
+#${PANEL_ID} button.ptt-readout {
+  margin: 0;
+  padding: 1px 8px;
+  font: inherit;
+  color: var(--text-color, #fff);
+  background-color: var(--button-color, #112052);
+  border: none;
+  cursor: text;
+  clip-path: polygon(0 0, 100% 0, calc(100% - 4px) 100%, 0 100%);
+}
+#${PANEL_ID} button.ptt-readout:hover { background-color: var(--button-hover-color, #334b77); }
+#${PANEL_ID} input.ptt-readout-edit {
+  width: 76px;
+  padding: 1px 8px;
+  font: inherit;
+  color: var(--text-color, #fff);
+  background-color: var(--surface-tertiary-color, #192042);
+  border: 1px solid var(--button-hover-color, #334b77);
+  outline: none;
+  text-align: right;
+}
 #${PANEL_ID} input[type="range"] {
   width: 100%;
   height: 22px;
@@ -276,6 +300,10 @@ export function createPanel(api: TspmlApi): Panel {
   let dragPose: ModelPose | null = null;
   /** Editor presence last poll — a true→false edge auto-closes the panel. */
   let wasInEditor = false;
+  /** The exit edge closed a panel the user had open — reopen it when they
+   *  come back (leaving the editor even briefly, e.g. Escape to the menu,
+   *  should not cost them their place). */
+  let reopenOnEditorEnter = false;
 
   // ---- per-build DOM refs ----
   let root: HTMLDivElement | null = null;
@@ -293,6 +321,7 @@ export function createPanel(api: TspmlApi): Panel {
 
   const onSessionKey = (e: KeyboardEvent): void => {
     if (!session?.alive) return;
+    if (isTypingTarget(e.target)) return; // Enter in a text field must not Apply
     const handled = handleTransformKey(e.code);
     if (handled) {
       e.preventDefault();
@@ -628,12 +657,27 @@ export function createPanel(api: TspmlApi): Panel {
     if (wasInEditor && !inEditor) {
       // left the editor — the track being edited is gone from the screen
       abandonSession();
+      // Remember an open panel and bring it back on re-entry: Escape to the
+      // game menu and back should not silently eat the importer.
+      reopenOnEditorEnter = root?.style.display === 'flex' && root.isConnected;
       if (root) root.style.display = 'none';
+    }
+    if (!wasInEditor && inEditor && reopenOnEditorEnter) {
+      reopenOnEditorEnter = false;
+      if (root?.isConnected && root.ownerDocument === doc) root.style.display = 'flex';
     }
     wasInEditor = inEditor;
     if (!doc || !editorUi) return;
 
-    if (doc.getElementById(LAUNCHER_ID)) return;
+    // An existing launcher only counts if it lives inside THIS editor UI —
+    // a leftover from a previous editor instance (or an orphaned node from a
+    // torn-down document) satisfied getElementById and blocked re-injection,
+    // which is why the button sometimes never came back on editor re-entry.
+    const existing = doc.getElementById(LAUNCHER_ID);
+    if (existing) {
+      if (existing.isConnected && editorUi.contains(existing)) return;
+      existing.remove();
+    }
     const host = editorUi.querySelector('.mini-toolbar-container');
     if (!host) return;
     if (!doc.getElementById(STYLE_ID)) {
@@ -876,20 +920,67 @@ function slider(
   const el = doc.createElement('div');
   const top = doc.createElement('div');
   top.className = 'ptt-slider-top';
-  const readout = doc.createElement('span');
+  const readout = doc.createElement('button');
+  readout.type = 'button';
+  readout.className = 'ptt-readout';
+  readout.title = 'Click to type an exact value';
   readout.textContent = fmt(value);
   top.append(doc.createTextNode(label), readout);
   const input = doc.createElement('input');
   input.type = 'range';
   input.min = String(min);
   input.max = String(max);
-  input.step = String(step);
+  // step="any" + manual drag snapping: a native step would also snap values
+  // ASSIGNED to the input, silently turning a typed 37° into 35.
+  input.step = 'any';
   input.value = String(value);
+  const decimals = (String(step).split('.')[1] ?? '').length;
   input.addEventListener('input', () => {
-    const v = Number(input.value);
+    const v = Number((Math.round(Number(input.value) / step) * step).toFixed(decimals));
+    input.value = String(v);
     readout.textContent = fmt(v);
     onChange(v);
   });
+
+  // Click the number → an inline text field; Enter/blur commits (clamped to
+  // the range, free of the drag snap), Escape cancels. This is the only way
+  // to enter exact values like 37° or ×1.55.
+  readout.addEventListener('click', () => {
+    const edit = doc.createElement('input');
+    edit.type = 'text';
+    edit.className = 'ptt-readout-edit';
+    edit.value = String(Number(input.value));
+    edit.setAttribute('inputmode', 'decimal');
+    readout.style.display = 'none';
+    top.appendChild(edit);
+    edit.focus();
+    edit.select();
+    let done = false;
+    const close = (commit: boolean): void => {
+      if (done) return;
+      done = true;
+      if (commit) {
+        const v = parseTypedValue(edit.value, min, max);
+        if (v !== null) {
+          input.value = String(v);
+          readout.textContent = fmt(v);
+          onChange(v);
+        }
+      }
+      edit.remove();
+      readout.style.display = '';
+    };
+    edit.addEventListener('keydown', (e) => {
+      // Capture-phase window listeners (session keys, undo bridge, the game)
+      // fire BEFORE this — they carry their own typing-target guards; this
+      // stops anything listening in the bubble phase.
+      e.stopPropagation();
+      if (e.key === 'Enter') close(true);
+      else if (e.key === 'Escape') close(false);
+    });
+    edit.addEventListener('blur', () => close(true));
+  });
+
   el.append(top, input);
   return {
     el,

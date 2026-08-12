@@ -39,6 +39,35 @@ interface Elementish {
   getAttribute?(name: string): string | null;
 }
 
+/** Toolbar-button view for the force-enable pass. */
+interface Buttonish extends Elementish {
+  hasAttribute?(name: string): boolean;
+  removeAttribute?(name: string): void;
+  setAttribute?(name: string, value: string): void;
+  classList?: { contains(c: string): boolean; add(c: string): void; remove(c: string): void };
+}
+
+/** The game greys its undo/redo buttons out (`disabled` attribute and/or a
+ *  `.disabled` class — the bundle has CSS for both) whenever ITS OWN stack is
+ *  empty. A disabled button never emits real clicks, so our batches would be
+ *  unreachable from the toolbar exactly when they matter most (apply as the
+ *  first edit). While the bridge has history it force-enables the buttons and
+ *  hands the state back the moment it doesn't. */
+const BUTTON_SYNC_MS = 250;
+
+/** True when `target` is something the user types into (text input, textarea,
+ *  contenteditable) — undo/redo hotkeys must edit THAT text, not the track. */
+export function isTypingTarget(target: EventTarget | null): boolean {
+  const t = target as { tagName?: unknown; type?: unknown; isContentEditable?: unknown } | null;
+  if (!t) return false;
+  if (t.isContentEditable === true) return true;
+  if (typeof t.tagName !== 'string') return false;
+  if (t.tagName === 'TEXTAREA') return true;
+  if (t.tagName !== 'INPUT') return false;
+  const type = typeof t.type === 'string' ? t.type : 'text';
+  return type !== 'range' && type !== 'checkbox' && type !== 'button' && type !== 'file' && type !== 'color';
+}
+
 /** The editor toolbar's undo/redo buttons carry webpack-emitted icon URLs
  *  ending in images/undo.svg / images/redo.svg — the one stable marker. */
 export function gestureFor(target: EventTarget | null): 'undo' | 'redo' | null {
@@ -49,11 +78,46 @@ export function gestureFor(target: EventTarget | null): 'undo' | 'redo' | null {
   return null;
 }
 
+/** Find the editor toolbar's undo/redo buttons in `doc` and force-enable the
+ *  ones whose bridge stack has something to do. One-way: we never re-disable
+ *  (a hand edit both clears our stacks AND gives the game a reason to enable
+ *  its own button — re-disabling would fight it; the game re-asserts the
+ *  state itself on its next edit). Exported for tests. */
+export function syncToolbarButtons(
+  doc: { querySelectorAll?(sel: string): ArrayLike<Buttonish> } | null | undefined,
+  undoDepth: number,
+  redoDepth: number,
+): void {
+  const buttons = doc?.querySelectorAll?.('button');
+  if (!buttons) return;
+  for (let i = 0; i < buttons.length; i++) {
+    const b = buttons[i]!;
+    const src = b.querySelector?.('img')?.getAttribute?.('src') ?? '';
+    const wants = /undo\.svg/.test(src) ? undoDepth > 0 : /redo\.svg/.test(src) ? redoDepth > 0 : false;
+    if (!wants) continue;
+    if (b.hasAttribute?.('disabled')) b.removeAttribute?.('disabled');
+    if ((b as { disabled?: boolean }).disabled) (b as { disabled?: boolean }).disabled = false;
+    if (b.classList?.contains('disabled')) b.classList.remove('disabled');
+  }
+}
+
 export function createUndoBridge(track: GameTrack, gameWindow: Window): UndoBridge {
   const undoStack: (readonly PlacedPart[])[] = [];
   const redoStack: (readonly PlacedPart[])[] = [];
   let internal = false;
   let disposed = false;
+
+  // The game re-renders/re-disables its toolbar on its own schedule — keep
+  // (re-)enabling until our history empties. setInterval off the GAME window
+  // so a torn-down frame stops the timer with it.
+  const syncButtons = (): void => {
+    if (disposed || (undoStack.length === 0 && redoStack.length === 0)) return;
+    try {
+      syncToolbarButtons((gameWindow as { document?: Document }).document, undoStack.length, redoStack.length);
+    } catch { /* frame gone */ }
+  };
+  let buttonTimer = 0;
+  try { buttonTimer = (gameWindow.setInterval as typeof setInterval)(syncButtons, BUTTON_SYNC_MS) as unknown as number; } catch { /* no timers on fake windows */ }
 
   // ---- foreign-edit detection: shadow the instance methods ----
   const trackRec = track as unknown as Record<string, TrackFn>;
@@ -138,11 +202,12 @@ export function createUndoBridge(track: GameTrack, gameWindow: Window): UndoBrid
     const willHandle = g === 'undo' ? undoStack.length > 0 : redoStack.length > 0;
     if (!willHandle) return;
     swallow(e);
-    if (e.type === 'click') handle(g);
+    if (e.type === 'click') { handle(g); syncButtons(); }
   };
 
   const onKeyDown = (e: KeyboardEvent): void => {
     if (disposed || !(e.ctrlKey || e.metaKey) || e.altKey) return;
+    if (isTypingTarget(e.target)) return; // Ctrl+Z in a text field edits text
     const k = e.key.toLowerCase();
     const g: 'undo' | 'redo' | null =
       k === 'z' ? (e.shiftKey ? 'redo' : 'undo') : k === 'y' && !e.shiftKey ? 'redo' : null;
@@ -151,6 +216,7 @@ export function createUndoBridge(track: GameTrack, gameWindow: Window): UndoBrid
     if (!willHandle) return;
     swallow(e);
     handle(g);
+    syncButtons();
   };
 
   gameWindow.addEventListener('pointerdown', onPointer, true);
@@ -163,6 +229,7 @@ export function createUndoBridge(track: GameTrack, gameWindow: Window): UndoBrid
       if (disposed || parts.length === 0) return;
       undoStack.push([...parts]);
       redoStack.length = 0; // a new apply is a new change — redo history dies
+      syncButtons(); // make the toolbar undo button clickable right away
     },
     runInternal,
     get undoDepth() { return undoStack.length; },
@@ -172,6 +239,7 @@ export function createUndoBridge(track: GameTrack, gameWindow: Window): UndoBrid
       disposed = true;
       undoStack.length = 0;
       redoStack.length = 0;
+      try { gameWindow.clearInterval(buttonTimer); } catch { /* frame gone */ }
       // Restore the original track methods (the instance outlives the editor).
       try {
         trackRec['setPart'] = origSetPart;
