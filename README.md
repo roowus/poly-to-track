@@ -33,6 +33,9 @@ TSPML's `api.tracks` registry — indistinguishable from a hand-imported track.
    (The manifest's entrypoint resolves to the committed `dist/entrypoint.js`.)
 3. Or **paste manually**: copy `mod.json` and `dist/entrypoint.js` into the
    *Add a mod* dialog.
+
+   Either way, the mod's card in the portal sidebar grows a **docs** button
+   linking back to this page (the manifest's `homepage`).
 4. Open the **track editor** and click the **cube** button at the left of
    the editor's cut/copy/paste toolbar — or press **P** (rebindable in
    TSPML's keybind settings).
@@ -73,7 +76,10 @@ transform handles**, Blender-style:
 - **White center box** — drag to scale uniformly
 
 Red = X, green = Y, blue = Z, exactly like Blender. Nothing is written to
-the track until Apply, so moving even a 100k-part model is instant. The
+the track until Apply, so moving even a 100k-part model is instant. If the
+ghost intersects parts you already placed, the Apply strip shows an amber
+**overlaps N existing parts** warning (checked against the editor's real
+tile occupancy) — you can still Apply if the overlap is intentional. The
 panel's sliders mirror the handles (drag a frame and the panel's rotation
 slider follows), and these keys work too:
 

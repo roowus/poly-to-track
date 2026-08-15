@@ -41,6 +41,14 @@ export interface GameTrack {
   ): unknown;
   refreshMeshes(): void;
   getBounds?(): TrackBounds;
+  /** Read surface documented by TSPML's editor-internals research (#87):
+   *  plain-data occupancy queries, used for the overlap warning. Optional —
+   *  present on the 0.6.2 Track class, but nothing breaks without them. */
+  getPartsAt?(x: number, y: number, z: number): readonly unknown[];
+  getPartsWithin?(
+    minX: number, minY: number, minZ: number,
+    maxX: number, maxY: number, maxZ: number,
+  ): readonly unknown[];
 }
 
 /** Validate a captured value before trusting it as the game track. */

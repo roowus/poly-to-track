@@ -29,7 +29,8 @@ import { createGhost, type Ghost } from '../game/ghost';
 import { createGizmo, type Gizmo } from '../game/gizmo';
 import { createTransformHandles, type HandlesHost, type TransformHandles } from '../game/handles';
 import { stageParts, translateParts, type InsertSession } from '../game/insert';
-import { findGameWindow, getCapturedRenderer, getCapturedTrack, pickFreeOffsetCells } from '../game/track';
+import { countOverlaps } from '../game/overlap';
+import { findGameWindow, getCapturedRenderer, getCapturedTrack, pickFreeOffsetCells, type GameTrack } from '../game/track';
 import { createUndoBridge, isTypingTarget, type UndoBridge } from '../game/undo';
 import { parseObj } from '../mesh/obj';
 import { parseStl } from '../mesh/stl';
@@ -271,6 +272,12 @@ const PANEL_CSS = `
   margin-right: 6px;
   max-width: 210px;
 }
+#${TOOLBAR_ID} .ptt-overlap {
+  font-size: 16px;
+  color: #ffd27d;
+  margin-right: 6px;
+  white-space: nowrap;
+}
 `;
 
 export interface Panel {
@@ -289,6 +296,9 @@ export function createPanel(api: TspmlApi): Panel {
   let session: InsertSession | null = null;
   let sessionBaseOffset: [number, number, number] = [0, 0, 0];
   let sessionKeyWindow: Window | null = null;
+  /** The captured track the live session stages into — overlap checks read it. */
+  let sessionTrack: GameTrack | null = null;
+  let overlapTimer = 0;
   let gizmo: Gizmo | null = null;
   let ghost: Ghost | null = null;
   let handles: TransformHandles | null = null;
@@ -350,6 +360,26 @@ export function createPanel(api: TspmlApi): Panel {
     if (!session?.translate(dx, dy, dz)) return;
     ghost?.setOffset(session.offset.x, session.offset.y, session.offset.z);
     syncGizmo();
+    scheduleOverlapCheck();
+  }
+
+  /** Debounced ghost-vs-track overlap warning (game/overlap.ts — the read
+   *  methods come from TSPML's #87 editor research). Runs off the move/rotate
+   *  hot path: a drag only pays for the one check after it settles. */
+  function scheduleOverlapCheck(): void {
+    window.clearTimeout(overlapTimer);
+    overlapTimer = window.setTimeout(() => {
+      const warn = toolbar?.querySelector<HTMLElement>('.ptt-overlap');
+      if (!warn) return;
+      if (!session?.alive || !sessionTrack) { warn.style.display = 'none'; return; }
+      const res = countOverlaps(sessionTrack, session.parts, session.offset);
+      if (!res.supported || res.overlapping === 0) {
+        warn.style.display = 'none';
+        return;
+      }
+      warn.style.display = '';
+      warn.textContent = `⚠ overlaps ${res.overlapping.toLocaleString()}${res.capped ? '+' : ''} existing part${res.overlapping === 1 && !res.capped ? '' : 's'}`;
+    }, 120);
   }
 
   /** The ONE way pose changes (panel sliders, handles, R key): update state,
@@ -420,6 +450,10 @@ export function createPanel(api: TspmlApi): Panel {
 
   /** Tear down ghost/gizmo/handles/toolbar/keys — everything visual about a session. */
   function clearSessionUi(): void {
+    window.clearTimeout(overlapTimer);
+    sessionTrack = null;
+    const warn = toolbar?.querySelector<HTMLElement>('.ptt-overlap');
+    if (warn) warn.style.display = 'none';
     ghost?.dispose();
     ghost = null;
     gizmo?.dispose();
@@ -631,7 +665,11 @@ export function createPanel(api: TspmlApi): Panel {
     hint.textContent = 'drag arrows to move, frames to rotate, tips to scale one axis · Enter applies';
     const applyBtn = btn(doc, '✓ Apply', () => endSession('apply'));
     applyBtn.classList.add('primary');
-    toolbar.append(hint, applyBtn, btn(doc, '✕ Cancel', () => endSession('remove')));
+    // Overlap warning — filled in by scheduleOverlapCheck, hidden while clear.
+    const overlapWarn = doc.createElement('span');
+    overlapWarn.className = 'ptt-overlap';
+    overlapWarn.style.display = 'none';
+    toolbar.append(hint, overlapWarn, applyBtn, btn(doc, '✕ Cancel', () => endSession('remove')));
 
     // The game's #ui layer is scaled with the game UI and has
     // pointer-events:none — the panel re-enables its own. Fall back to body
@@ -771,6 +809,7 @@ export function createPanel(api: TspmlApi): Panel {
       session.replaceParts(buildParts(grid, sessionBuildOptions()));
       ghost?.setParts(session.parts);
       syncGizmo();
+      scheduleOverlapCheck();
     } catch (err) {
       setStatus(`⚠ ${err instanceof Error ? err.message : String(err)}`, true);
     }
@@ -816,6 +855,7 @@ export function createPanel(api: TspmlApi): Panel {
     try {
       sessionBaseOffset = pickFreeOffsetCells(track);
       session = stageParts(track, buildParts(grid, sessionBuildOptions()));
+      sessionTrack = track;
       if (toolbar) toolbar.style.display = 'flex';
       if (insertBtn) insertBtn.disabled = true;
       if (w) startSessionKeys(w);
@@ -832,6 +872,7 @@ export function createPanel(api: TspmlApi): Panel {
       handles?.dispose();
       handles = renderer && w ? createTransformHandles(renderer, w, handlesHost) : null;
       syncGizmo();
+      scheduleOverlapCheck(); // pickFreeOffsetCells aims past the build, but verify
       setStatus(`Staged ${session.count.toLocaleString()} parts — drag the handles, then Apply.`, false);
     } catch (err) {
       session = null;

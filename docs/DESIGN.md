@@ -128,8 +128,17 @@ half-applying.
 
 Limitation (documented, deliberate): the editor's undo stack lives in the
 untransformed lazy chunk 112, which mixins can't reach — only
-`main.bundle.js` is transformed (TSPML#87). The session's own Remove is the
-undo for everything it placed; once Applied, parts are ordinary track data.
+`main.bundle.js` is transformed. TSPML's editor-internals research
+(docs/research/editor-api-scavenging.md upstream, issue #87) confirmed this
+and phased the fix: what this mod does — capture the shared main-bundle
+Track instance and keep its own batch history (`src/game/undo.ts`) — is
+exactly the research's "Phase A" pattern, with the Ctrl+Z gap bridged
+locally; a chunk-transform slice (TSPML#98) is the prerequisite for true
+editor-stack integration ("Phase C"). If TSPML ships a Tier-1
+`api.editor.insertParts`, this mod's private mixins become a migration
+target. The same research documented the Track read surface —
+`getPartsAt` / `getPartsWithin` — which `src/game/overlap.ts` uses for the
+staged-ghost overlap warning.
 
 The panel itself now mounts inside the game document's `#ui` layer and styles
 itself with the game's CSS custom properties + clip-path idiom, so it reads
