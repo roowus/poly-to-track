@@ -1,5 +1,7 @@
 # poly-to-track
 
+<img src="assets/icon.svg" alt="poly-to-track icon" width="96" align="right">
+
 A [TSPML](https://github.com/roowus/TSPML) mod that imports 3D models
 (**STL** / **OBJ**) into [PolyTrack](https://www.kodub.com/apps/polytrack) as
 LEGO-style block builds — think **Schematica / Axiom for PolyTrack**.
@@ -50,7 +52,7 @@ editor.
 | Control | What it does |
 | --- | --- |
 | **Load STL / OBJ** | Parses the file (binary + ASCII STL; OBJ with quads/negative indices) |
-| Preview canvas | Drag to orbit the voxelized model — the green grid is the track floor, one grid square = one block cell at the current resolution |
+| Preview canvas | Drag to orbit the voxelized model, drawn as true isometric cubes locked to the green ground grid (the track floor) — one grid square = one block cell at the current resolution |
 | **Resolution** (4–256) | Longest model axis maps to this many blocks |
 | **Fill interior** | Flood-fill the inside (off by default — hollow shells are far fewer parts) |
 | **Rotate X/Y/Z** | Any angle (drag snaps to 5°), applied to the mesh before voxelization — a 45° build is a true diagonal voxelization, not sheared blocks |

@@ -12,6 +12,76 @@
 import type { VoxelGrid } from '../voxel/voxelize';
 
 const MAX_DRAWN_VOXELS = 60_000;
+/** Below this projected cell size (device px) cubes are sub-pixel — draw flat squares. */
+const CUBE_MIN_PX = 3;
+
+/**
+ * Orthographic camera projection shared by the ground grid and the voxels:
+ * yaw about Y, then pitch about X, drop z. Returns screen-space offsets from
+ * the canvas center (+sx right, +sy down) and depth (LARGER = nearer).
+ * Both the ground and the model MUST go through this one function — drawing
+ * them with different math is exactly how they stop rotating together.
+ */
+export function projectPoint(
+  x: number, y: number, z: number,
+  yaw: number, pitch: number, scale: number,
+): { sx: number; sy: number; depth: number } {
+  const cy = Math.cos(yaw), sy = Math.sin(yaw);
+  const cp = Math.cos(pitch), sp = Math.sin(pitch);
+  const rx = x * cy + z * sy;
+  const rz = -x * sy + z * cy;
+  const ry = y * cp - rz * sp;
+  return { sx: rx * scale, sy: -ry * scale, depth: y * sp + rz * cp };
+}
+
+/** World y of the bottom FACE of the bottom voxel layer (centers sit at
+ *  layer·ya − midY), i.e. where the ground plane belongs. */
+export function groundPlaneY(midY: number, yAspect: number): number {
+  return -midY - yAspect / 2;
+}
+
+export interface CubeFace {
+  /** 4 screen-space corner offsets from the cell center, fan order. */
+  readonly corners: readonly (readonly [number, number])[];
+  /** Brightness multiplier so the 3 faces read as a cube. */
+  readonly shade: number;
+}
+
+/**
+ * Screen-space geometry of one voxel cell (x/z size 1, y size yAspect) under
+ * the current camera: the camera-facing faces with their corner offsets.
+ * Orthographic ⇒ identical for every cell, so compute once per frame and
+ * translate per voxel. Corners are derived through projectPoint, which is
+ * what keeps voxel edges parallel to the ground grid at every angle.
+ */
+export function cubeGeometry(
+  yaw: number, pitch: number, yAspect: number, scale: number,
+): readonly CubeFace[] {
+  const p = (x: number, y: number, z: number) => projectPoint(x, y, z, yaw, pitch, scale);
+  const hx = p(0.5, 0, 0);
+  const hy = p(0, yAspect / 2, 0);
+  const hz = p(0, 0, 0.5);
+  const axes = [hx, hy, hz];
+  const shades = [0.8, 1.0, 0.65]; // x sides, top/bottom, z sides
+  const faces: CubeFace[] = [];
+  for (let a = 0; a < 3; a++) {
+    const n = axes[a]!;
+    if (n.depth === 0) continue; // edge-on — zero area
+    const s = n.depth > 0 ? 1 : -1; // the face whose normal points at the camera
+    const u = axes[(a + 1) % 3]!;
+    const v = axes[(a + 2) % 3]!;
+    faces.push({
+      shade: shades[a]!,
+      corners: [
+        [s * n.sx + u.sx + v.sx, s * n.sy + u.sy + v.sy],
+        [s * n.sx + u.sx - v.sx, s * n.sy + u.sy - v.sy],
+        [s * n.sx - u.sx - v.sx, s * n.sy - u.sy - v.sy],
+        [s * n.sx - u.sx + v.sx, s * n.sy - u.sy + v.sy],
+      ],
+    });
+  }
+  return faces;
+}
 
 export interface VoxelPreview {
   readonly canvas: HTMLCanvasElement;
@@ -55,8 +125,6 @@ export function createVoxelPreview(width: number, height: number, doc: Document 
       return;
     }
 
-    const cy = Math.cos(yaw), sy = Math.sin(yaw);
-    const cp = Math.cos(pitch), sp = Math.sin(pitch);
     // y cells are anisotropic (¼ height by default); squash y so the preview
     // shows real-world proportions.
     const ya = grid.yAspect;
@@ -69,14 +137,16 @@ export function createVoxelPreview(width: number, height: number, doc: Document 
     const baseR = (base >> 16) & 255, baseG = (base >> 8) & 255, baseB = base & 255;
 
     // ---- ground plane (y = 0 = the track floor the build sits on) ----
-    // Drawn first so the model always reads as resting ON it.
+    // Drawn first so the model always reads as resting ON it. Same
+    // projectPoint as the voxels — one camera, so they rotate together.
     const proj = (x: number, y: number, z: number): [number, number] => {
-      const rx = x * cy + z * sy;
-      const rz = -x * sy + z * cy;
-      const ry = y * cp - rz * sp;
-      return [w / 2 + rx * scale, h / 2 - ry * scale];
+      const q = projectPoint(x, y, z, yaw, pitch, scale);
+      return [w / 2 + q.sx, h / 2 + q.sy];
     };
-    const gy = -midY; // model min-y sits at the ground
+    // Bottom FACE of the bottom voxel layer (cell centers sit half a cell
+    // higher) — with gy at the centers, the model floated half a cell and
+    // orbit parallax read as the ground sliding against it.
+    const gy = groundPlaneY(midY, ya);
     const gExt = Math.max(midX, midZ) * 1.7 + 2;
     // One grid square = one voxel cell: lines fall on cell EDGES (centers sit
     // at integer − mid, so edges sit at integer − mid − 0.5 per axis). At high
@@ -113,18 +183,23 @@ export function createVoxelPreview(width: number, height: number, doc: Document 
       const x = (i % grid.nx) - midX;
       const y = (Math.floor(i / grid.nx) % grid.ny) * ya - midY;
       const z = Math.floor(i / (grid.nx * grid.ny)) - midZ;
-      // yaw about Y, then pitch about X; orthographic drop of z.
-      const rx = x * cy + z * sy;
-      const rz = -x * sy + z * cy;
-      const ry = y * cp - rz * sp;
-      const depth = y * sp + rz * cp;
-      pts.push(w / 2 + rx * scale, h / 2 - ry * scale, depth, i);
+      const q = projectPoint(x, y, z, yaw, pitch, scale);
+      pts.push(w / 2 + q.sx, h / 2 + q.sy, q.depth, i);
     }
     const order: number[] = [];
     for (let i = 0; i < pts.length; i += 4) order.push(i);
     order.sort((a, b) => pts[a + 2]! - pts[b + 2]!);
 
-    const size = Math.max(1.5 * devicePixelRatio, scale * 0.92);
+    // Each voxel is drawn as its camera-facing cube faces (same projection as
+    // the ground grid — screen-aligned axis squares were what made the model
+    // look detached from the ground: their edges never rotated with the
+    // camera). Orthographic ⇒ the face polygons are identical for every cell;
+    // compute once, translate per voxel. Sub-pixel cells fall back to dots.
+    const faces = cubeGeometry(yaw, pitch, ya, scale);
+    // Dots are ~5× cheaper than 3 filled paths — use them when cells are
+    // sub-pixel anyway or the drawn count would make orbiting stutter.
+    const tiny = scale < CUBE_MIN_PX * devicePixelRatio || faces.length === 0 || order.length > 24_000;
+    const dotSize = Math.max(1.5 * devicePixelRatio, scale * 0.92);
     for (const i of order) {
       // Cheap depth shading keeps the silhouette readable without lighting.
       const t = (pts[i + 2]! / extent + 0.5) * 0.55 + 0.45;
@@ -136,8 +211,23 @@ export function createVoxelPreview(width: number, height: number, doc: Document 
           r = voxColors[ci]!; g = voxColors[ci + 1]!; b = voxColors[ci + 2]!;
         }
       }
-      ctx.fillStyle = shade(r, g, b, t);
-      ctx.fillRect(pts[i]! - size / 2, pts[i + 1]! - size / 2, size, size);
+      const cx0 = pts[i]!, cy0 = pts[i + 1]!;
+      if (tiny) {
+        ctx.fillStyle = shade(r, g, b, t);
+        ctx.fillRect(cx0 - dotSize / 2, cy0 - dotSize / 2, dotSize, dotSize);
+        continue;
+      }
+      for (const f of faces) {
+        ctx.fillStyle = shade(r, g, b, t * f.shade);
+        const c = f.corners;
+        ctx.beginPath();
+        ctx.moveTo(cx0 + c[0]![0], cy0 + c[0]![1]);
+        ctx.lineTo(cx0 + c[1]![0], cy0 + c[1]![1]);
+        ctx.lineTo(cx0 + c[2]![0], cy0 + c[2]![1]);
+        ctx.lineTo(cx0 + c[3]![0], cy0 + c[3]![1]);
+        ctx.closePath();
+        ctx.fill();
+      }
     }
   }
 
@@ -145,7 +235,9 @@ export function createVoxelPreview(width: number, height: number, doc: Document 
     dragging = true;
     lastX = e.clientX;
     lastY = e.clientY;
-    canvas.setPointerCapture(e.pointerId);
+    // Capture can throw for pointers the browser no longer tracks (e.g.
+    // synthetic events); dragging works either way, capture is best-effort.
+    try { canvas.setPointerCapture(e.pointerId); } catch { /* best-effort */ }
     canvas.style.cursor = 'grabbing';
   };
   const onPointerMove = (e: PointerEvent) => {
@@ -158,7 +250,7 @@ export function createVoxelPreview(width: number, height: number, doc: Document 
   };
   const onPointerUp = (e: PointerEvent) => {
     dragging = false;
-    canvas.releasePointerCapture(e.pointerId);
+    try { canvas.releasePointerCapture(e.pointerId); } catch { /* best-effort */ }
     canvas.style.cursor = 'grab';
   };
   canvas.addEventListener('pointerdown', onPointerDown);
