@@ -178,6 +178,24 @@ describe('model colors', () => {
     expect(nearestColorId(200, 200, 200)).toBe(0);  // light gray → Default
     expect(nearestColorId(40, 90, 45)).toBe(36);    // green
   });
+
+  it('pale/tinted colors keep their hue instead of rounding to white', () => {
+    // The "incredibly white" bug: these all mapped to the light gray Default
+    // under a value-weighted metric because the palette's chromatic swatches
+    // are all DARK.
+    expect(nearestColorId(250, 180, 180)).toBe(33);  // pale pink → red
+    expect(nearestColorId(255, 245, 157)).toBe(35);  // pastel yellow → yellow
+    expect(nearestColorId(173, 216, 230)).toBe(38);  // light blue → blue
+    expect(nearestColorId(152, 251, 152)).toBe(36);  // pale green → green
+    expect(nearestColorId(230, 220, 250)).toBe(39);  // lavender → purple
+  });
+
+  it('true grays still pick a gray by value', () => {
+    expect(nearestColorId(245, 245, 245)).toBe(0);   // white → light gray
+    expect(nearestColorId(128, 128, 128)).toBe(0);   // mid gray
+    expect(nearestColorId(20, 20, 20)).toBe(32);     // black swatch
+    expect(nearestColorId(8, 8, 8)).toBe(32);
+  });
 });
 
 describe('per-voxel texture sampling', () => {

@@ -21,7 +21,9 @@ textures**, colored binary STL) are mapped
 per-block onto the game's palette — textures are sampled **per block**
 (each voxel looks up its own texel through the triangle's UV mapping), so
 a skin or texture atlas genuinely paints the build instead of flattening
-to one color per triangle. The builds use the game's full shape
+to one color per triangle. Palette matching is **hue-first** (the game's
+custom swatches are dark, so light tints keep their hue — a pastel maps
+to its color, not to white). The builds use the game's full shape
 vocabulary (blocks, half/quarter blocks, slopes) so curved models aren't
 staircases of slabs.
 

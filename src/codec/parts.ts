@@ -69,26 +69,51 @@ export const COLOR_SWATCHES: readonly { id: number; name: string; hex: string }[
 
 /**
  * Nearest game block color for an sRGB triple — used to map colored-model
- * voxels onto the game's fixed palette. The game's custom surfaces are all
- * DARK versions of their hue (pure red input vs #501b1b), so any RGB-space
- * metric lets brightness swamp hue and sends "red" to "orange". Compare in
- * HSV instead: hue dominates (gated by saturation so grays ignore it),
- * saturation next, value least.
+ * voxels onto the game's fixed palette. That palette is 9 DARK hues + 2 grays
+ * (one light, one black): hue is the only thing it can represent well. So
+ * match HUE first — near-blacks and the truly gray (s < 0.05, where the
+ * sample's hue is noise) pick their gray by VALUE alone; every tinted color,
+ * however pale, picks the nearest chromatic hue with saturation/value as
+ * tiebreaks only. A brightness-weighted metric here is the "whole build came
+ * out white" bug: pale tints (skin, pastels, light texture areas) all score
+ * nearest the single light swatch.
  */
 export function nearestColorId(r: number, g: number, b: number): number {
   const [h, s, v] = rgbToHsv(r, g, b);
-  let best = COLOR_SWATCHES[0]!.id;
-  let bestD = Infinity;
+  if (s < 0.05 || v < 0.1) return v > 0.4 ? COLOR.Default : COLOR.Custom0;
+  let best: number = COLOR.Default;
+  let bestScore = Infinity;
   for (const sw of COLOR_SWATCHES) {
-    const n = parseInt(sw.hex.slice(1), 16);
-    const [sh, ss, sv] = rgbToHsv((n >> 16) & 255, (n >> 8) & 255, n & 255);
+    const [sh0, ss, sv] = swatchHsv(sw.id);
+    if (ss === 0) continue; // grays handled above
+    const sh = SWATCH_MATCH_HUE.get(sw.id) ?? sh0;
     let dh = Math.abs(h - sh);
     if (dh > 0.5) dh = 1 - dh; // hue wraps
-    const ds = s - ss, dv = v - sv;
-    const d = 40 * dh * dh * s * ss + ds * ds + 0.3 * dv * dv;
-    if (d < bestD) { bestD = d; best = sw.id; }
+    // Hue dominates, scaled by input saturation (a barely-tinted input's hue
+    // is noisy); saturation and value only separate near hue-ties.
+    const score = 40 * dh * dh * (0.2 + 0.8 * s) + 0.25 * (s - ss) ** 2 + 0.05 * (v - sv) ** 2;
+    if (score < bestScore) { bestScore = score; best = sw.id; }
   }
   return best;
+}
+
+/** HSV of a palette swatch, computed once at module load. */
+const SWATCH_HSV = new Map<number, [number, number, number]>(
+  COLOR_SWATCHES.map((sw) => {
+    const n = parseInt(sw.hex.slice(1), 16);
+    return [sw.id, rgbToHsv((n >> 16) & 255, (n >> 8) & 255, n & 255)];
+  }),
+);
+/**
+ * Teal (hue 180°) and navy (243°) are 63° apart — the palette's biggest hue
+ * gap. Matching navy at its literal hue makes everything down to hue 211 map
+ * to teal (sky-blue azure included), which reads wrong: color-naming
+ * conventions put the teal/blue boundary near 195°. Compress navy's MATCHING
+ * hue to 0.575 (visually calibrated, like the slope rotations).
+ */
+const SWATCH_MATCH_HUE: ReadonlyMap<number, number> = new Map([[COLOR.Custom6, 0.575]]);
+function swatchHsv(id: number): [number, number, number] {
+  return SWATCH_HSV.get(id) ?? [0, 0, 0];
 }
 
 /** sRGB bytes → HSV, hue normalized to [0,1). */
