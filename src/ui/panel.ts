@@ -32,9 +32,10 @@ import { stageParts, translateParts, type InsertSession } from '../game/insert';
 import { countOverlaps } from '../game/overlap';
 import { findGameWindow, getCapturedRenderer, getCapturedTrack, pickFreeOffsetCells, type GameTrack } from '../game/track';
 import { createUndoBridge, isTypingTarget, type UndoBridge } from '../game/undo';
-import { parseMtl, parseObj } from '../mesh/obj';
+import { parseMtl, parseObj, type MtlMaterials } from '../mesh/obj';
 import { parseStl } from '../mesh/stl';
-import { parseGlb, parseGltf } from '../mesh/gltf';
+import { parseGlb, parseGltf, gltfImageBytes } from '../mesh/gltf';
+import type { DecodedImage } from '../mesh/texture';
 import { applyTransform, IDENTITY, type MeshTransform } from '../mesh/transform';
 import { meshBounds, type TriangleMesh } from '../mesh/types';
 import { buildParts, PARTS_WARNING, type BuildOptions } from '../voxel/build';
@@ -541,8 +542,8 @@ export function createPanel(api: TspmlApi): Panel {
     // file
     const fileInput = doc.createElement('input');
     fileInput.type = 'file';
-    fileInput.accept = '.stl,.obj,.mtl,.glb,.gltf,.bin';
-    fileInput.multiple = true; // OBJ+MTL / glTF+bin travel together
+    fileInput.accept = '.stl,.obj,.mtl,.glb,.gltf,.bin,.png,.jpg,.jpeg,.webp';
+    fileInput.multiple = true; // OBJ+MTL+textures / glTF+bin+textures travel together
     fileInput.style.display = 'none';
     fileInput.addEventListener('change', () => {
       const fs = fileInput.files;
@@ -742,41 +743,82 @@ export function createPanel(api: TspmlApi): Panel {
 
   // ---------- behaviour ----------
 
+  /** Encoded PNG/JPEG bytes → RGBA pixels; null when decoding fails. */
+  async function decodeImage(bytes: ArrayBuffer): Promise<DecodedImage | null> {
+    try {
+      const bmp = await createImageBitmap(new Blob([bytes]));
+      const cnv = document.createElement('canvas');
+      cnv.width = bmp.width;
+      cnv.height = bmp.height;
+      const c2d = cnv.getContext('2d');
+      if (!c2d) return null;
+      c2d.drawImage(bmp, 0, 0);
+      const px = c2d.getImageData(0, 0, bmp.width, bmp.height);
+      bmp.close();
+      return { width: px.width, height: px.height, data: px.data };
+    } catch {
+      return null; // broken texture ⇒ import still works, just uncolored
+    }
+  }
+
   async function loadFiles(files: File[]): Promise<void> {
     try {
       // The model is the one .stl/.obj/.glb/.gltf in the selection; everything
-      // else rides along as sidecars (.mtl for OBJ, .bin buffers for .gltf).
+      // else rides along as sidecars (.mtl / .bin buffers / texture images).
       const isModel = (n: string) => /\.(stl|obj|glb|gltf)$/i.test(n);
       const file = files.find((f) => isModel(f.name)) ?? files[0]!;
       const lower = file.name.toLowerCase();
+      // Sidecar lookup by basename — referenced URIs are relative paths
+      // (possibly %-encoded); the picker only gives us flat filenames.
+      const sidecars = new Map<string, ArrayBuffer>();
+      for (const f of files) {
+        if (f !== file && !/\.mtl$/i.test(f.name)) sidecars.set(f.name.toLowerCase(), await f.arrayBuffer());
+      }
+      const resolveBuffer = (uri: string): ArrayBuffer | null => {
+        let base = uri.split(/[/\\]/).pop() ?? uri;
+        try { base = decodeURIComponent(base); } catch { /* keep raw */ }
+        return sidecars.get(base.toLowerCase()) ?? null;
+      };
       let hint = '';
       if (lower.endsWith('.obj')) {
         // Merge every selected .mtl — OBJs can name several libraries.
-        const materials = new Map<string, readonly [number, number, number]>();
+        const materials: MtlMaterials = new Map();
         for (const f of files) {
           if (!/\.mtl$/i.test(f.name)) continue;
           for (const [k, v] of parseMtl(await f.text())) materials.set(k, v);
         }
+        // Decode each material's map_Kd from the same selection.
+        const missingTex: string[] = [];
+        for (const m of materials.values()) {
+          if (!m.mapKd) continue;
+          const bytes = resolveBuffer(m.mapKd);
+          m.image = bytes ? await decodeImage(bytes) : null;
+          if (!m.image) missingTex.push(m.mapKd);
+        }
         const obj = parseObj(await file.text(), materials);
         if (obj.mtlLibs.length > 0 && materials.size === 0 && !obj.colors) {
           hint = ` · select ${obj.mtlLibs.join(', ')} too for colors`;
+        } else if (missingTex.length > 0) {
+          hint = ` · select ${[...new Set(missingTex)].join(', ')} too for texture colors`;
         }
         mesh = obj;
       } else if (lower.endsWith('.glb') || lower.endsWith('.gltf')) {
-        // Sidecar lookup by basename — glTF buffer URIs are relative paths
-        // (possibly %-encoded); the picker only gives us flat filenames.
-        const sidecars = new Map<string, ArrayBuffer>();
-        for (const f of files) {
-          if (f !== file) sidecars.set(f.name.toLowerCase(), await f.arrayBuffer());
+        const raw = lower.endsWith('.glb') ? await file.arrayBuffer() : await file.text();
+        // Textures: pull each image's encoded bytes out of the glTF, decode
+        // async here (browser-only), pass pixels into the sync parser.
+        const images: (DecodedImage | null)[] = [];
+        let missingImages = 0;
+        for (const bytes of gltfImageBytes(raw, resolveBuffer)) {
+          const img = bytes ? await decodeImage(bytes) : null;
+          if (!img) missingImages++;
+          images.push(img);
         }
-        const resolveBuffer = (uri: string): ArrayBuffer | null => {
-          let base = uri.split(/[/\\]/).pop() ?? uri;
-          try { base = decodeURIComponent(base); } catch { /* keep raw */ }
-          return sidecars.get(base.toLowerCase()) ?? null;
-        };
-        mesh = lower.endsWith('.glb')
-          ? parseGlb(await file.arrayBuffer(), resolveBuffer)
-          : parseGltf(await file.text(), resolveBuffer);
+        mesh = typeof raw === 'string'
+          ? parseGltf(raw, resolveBuffer, null, images)
+          : parseGlb(raw, resolveBuffer, images);
+        if (missingImages > 0 && images.length === missingImages) {
+          hint = ' · textures missing — select the image files too for their colors';
+        }
       } else {
         mesh = parseStl(await file.arrayBuffer());
       }

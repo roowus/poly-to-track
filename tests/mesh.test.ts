@@ -125,9 +125,45 @@ f 7 8 9
 
   it('parses Kd diffuse colors into byte triples', () => {
     const mats = parseMtl(MTL);
-    expect(mats.get('red')).toEqual([255, 0, 0]);
-    expect(mats.get('blue')).toEqual([0, 0, 255]);
-    expect(mats.get('bare')).toEqual([230, 230, 230]); // no Kd → near-white
+    expect(mats.get('red')?.kd).toEqual([255, 0, 0]);
+    expect(mats.get('blue')?.kd).toEqual([0, 0, 255]);
+    expect(mats.get('bare')?.kd).toEqual([230, 230, 230]); // no Kd → near-white
+  });
+
+  it('captures map_Kd filenames, skipping dash-options', () => {
+    const mats = parseMtl('newmtl skin\nKd 1 1 1\nmap_Kd -o 0 0 0 -s 1 1 1 textures/skin base.png');
+    expect(mats.get('skin')?.mapKd).toBe('textures/skin base.png');
+  });
+
+  it('samples map_Kd at the triangle UV centroid (v flipped)', () => {
+    // 2×2 texture: top row red|green, bottom row blue|white.
+    const image = {
+      width: 2,
+      height: 2,
+      data: new Uint8Array([
+        255, 0, 0, 255,   0, 255, 0, 255,
+        0, 0, 255, 255,   255, 255, 255, 255,
+      ]),
+    };
+    const mats = parseMtl('newmtl tex\nKd 0 0 0\nmap_Kd t.png');
+    mats.get('tex')!.image = image;
+    // UVs centered in the top-left quadrant (v≈0.75 in OBJ = image top row).
+    const obj = [
+      'mtllib m.mtl',
+      'v 0 0 0', 'v 1 0 0', 'v 0 1 0',
+      'vt 0.2 0.7', 'vt 0.3 0.8', 'vt 0.25 0.75',
+      'usemtl tex',
+      'f 1/1 2/2 3/3',
+    ].join('\n');
+    const mesh = parseObj(obj, mats);
+    expect([...mesh.colors!]).toEqual([255, 0, 0]); // top-left texel = red
+  });
+
+  it('a textured material without UVs falls back to its Kd', () => {
+    const mats = parseMtl('newmtl tex\nKd 0 1 0\nmap_Kd t.png');
+    mats.get('tex')!.image = { width: 1, height: 1, data: new Uint8Array([255, 0, 0, 255]) };
+    const mesh = parseObj('usemtl tex\nv 0 0 0\nv 1 0 0\nv 0 1 0\nf 1 2 3', mats);
+    expect([...mesh.colors!]).toEqual([0, 255, 0]); // Kd green, no UVs to sample
   });
 
   it('usemtl colors the faces that follow it', () => {

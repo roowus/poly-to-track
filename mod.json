@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "poly-to-track",
   "name": "Poly To Track",
-  "version": "0.6.5",
+  "version": "0.6.6",
   "description": "Import 3D files (STL/OBJ) — colored models supported — and build them as PolyTrack block builds: position a viewport ghost with Blender-style 3D transform handles (move/rotate any angle/per-axis scale), then apply. Schematica for PolyTrack.",
   "entrypoint": "dist/entrypoint.js",
   "icon": "assets/icon.svg",

@@ -6,15 +6,22 @@
  * mod's triangle soup.
  *
  * Colors: a primitive's COLOR_0 vertex attribute wins (averaged per
- * triangle); otherwise the material's pbrMetallicRoughness.baseColorFactor.
- * Both are LINEAR per the glTF spec, so they're encoded to sRGB before
- * byte-packing — the palette matcher and preview expect display-space RGB.
+ * triangle); otherwise baseColorTexture sampled at each triangle's UV
+ * centroid × baseColorFactor; otherwise the flat baseColorFactor. Factors
+ * and COLOR_0 are LINEAR per the glTF spec, so everything is encoded to
+ * sRGB before byte-packing — the palette matcher and preview expect
+ * display-space RGB.
  *
  * Buffers: GLB's BIN chunk backs buffer 0; `data:` URIs are decoded inline;
  * anything else goes through the optional `resolveBuffer` callback (the
  * panel passes sibling files from the same file-picker selection).
+ *
+ * Textures: image DECODING is async and browser-only, so it stays in the
+ * panel — call gltfImageBytes() to get each image's raw bytes, decode them,
+ * and pass the pixels back via the `images` array (indexed like doc.images).
  */
 import type { TriangleMesh } from './types';
+import { sampleImage, srgbToLinear, linearToSrgbByte, type DecodedImage } from './texture';
 
 export type BufferResolver = (uri: string) => ArrayBuffer | null;
 
@@ -22,7 +29,11 @@ const GLB_MAGIC = 0x46546c67; // 'glTF'
 const CHUNK_JSON = 0x4e4f534a;
 const CHUNK_BIN = 0x004e4942;
 
-export function parseGlb(data: ArrayBuffer, resolveBuffer?: BufferResolver): TriangleMesh {
+export function parseGlb(
+  data: ArrayBuffer,
+  resolveBuffer?: BufferResolver,
+  images?: readonly (DecodedImage | null)[],
+): TriangleMesh {
   const view = new DataView(data);
   if (data.byteLength < 12 || view.getUint32(0, true) !== GLB_MAGIC) {
     throw new Error('GLB: not a glTF binary (bad magic)');
@@ -43,13 +54,14 @@ export function parseGlb(data: ArrayBuffer, resolveBuffer?: BufferResolver): Tri
     off += 8 + len + ((4 - (len % 4)) % 4);
   }
   if (!json) throw new Error('GLB: missing JSON chunk');
-  return parseGltf(json, resolveBuffer, bin);
+  return parseGltf(json, resolveBuffer, bin, images);
 }
 
 export function parseGltf(
   json: string,
   resolveBuffer?: BufferResolver,
   binChunk?: ArrayBuffer | null,
+  images?: readonly (DecodedImage | null)[],
 ): TriangleMesh {
   let doc: GltfDoc;
   try {
@@ -117,8 +129,8 @@ export function parseGltf(
       indices = seq;
     }
 
-    // Per-vertex COLOR_0 (linear, VEC3 or VEC4) beats the material's flat
-    // baseColorFactor; both end up as one sRGB byte triple per triangle.
+    // Color precedence: COLOR_0 vertex colors > baseColorTexture sampled at
+    // the triangle's UV centroid (× baseColorFactor) > flat baseColorFactor.
     let vcolors: Float32Array | null = null;
     let vcomps = 0;
     const colorIdx = prim.attributes?.COLOR_0;
@@ -127,16 +139,35 @@ export function parseGltf(
       vcomps = TYPE_COMPONENTS[doc.accessors?.[colorIdx]?.type ?? ''] ?? 0;
       if (vcomps < 3) vcolors = null;
     }
-    let flat: [number, number, number] | null = null;
     const mat = prim.material !== undefined ? doc.materials?.[prim.material] : undefined;
-    const bcf = mat?.pbrMetallicRoughness?.baseColorFactor;
-    if (Array.isArray(bcf) && bcf.length >= 3) {
+    const pbr = mat?.pbrMetallicRoughness;
+    const bcf = Array.isArray(pbr?.baseColorFactor) && pbr.baseColorFactor.length >= 3
+      ? pbr.baseColorFactor : [1, 1, 1, 1];
+    let flat: [number, number, number] | null = null;
+    if (pbr?.baseColorFactor) {
       flat = [srgbByte(bcf[0]!), srgbByte(bcf[1]!), srgbByte(bcf[2]!)];
+    }
+    // Texture path: needs the material to name a texture, the texture to
+    // reference a decoded image, and the primitive to carry that UV set.
+    let texImage: DecodedImage | null = null;
+    let uvs: Float32Array | null = null;
+    const texInfo = pbr?.baseColorTexture;
+    if (texInfo && images) {
+      const tex = doc.textures?.[texInfo.index ?? -1];
+      const imgIdx = tex?.source;
+      if (imgIdx !== undefined) texImage = images[imgIdx] ?? null;
+      const uvIdx = prim.attributes?.[`TEXCOORD_${texInfo.texCoord ?? 0}`];
+      if (texImage && uvIdx !== undefined) {
+        uvs = readAccessor(uvIdx);
+      } else {
+        texImage = null;
+      }
     }
 
     const triCount = Math.floor(indices.length / 3);
     for (let t = 0; t < triCount; t++) {
       let cr = 0, cg = 0, cb = 0;
+      let cu = 0, cv = 0;
       for (let k = 0; k < 3; k++) {
         const vi = indices[t * 3 + k]!;
         let x = pos[vi * 3]!, y = pos[vi * 3 + 1]!, z = pos[vi * 3 + 2]!;
@@ -153,9 +184,23 @@ export function parseGltf(
           cg += vcolors[vi * vcomps + 1]!;
           cb += vcolors[vi * vcomps + 2]!;
         }
+        if (uvs) {
+          cu += uvs[vi * 2]!;
+          cv += uvs[vi * 2 + 1]!;
+        }
       }
       if (vcolors) {
         triColors.push(srgbByte(cr / 3), srgbByte(cg / 3), srgbByte(cb / 3));
+        sawColor = true;
+      } else if (texImage && uvs) {
+        // Texel at the UV centroid; texture bytes are sRGB, factors linear —
+        // multiply in linear space, then back to display bytes.
+        const [tr, tg, tb] = sampleImage(texImage, cu / 3, cv / 3);
+        triColors.push(
+          linearToSrgbByte(srgbToLinear(tr) * bcf[0]!),
+          linearToSrgbByte(srgbToLinear(tg) * bcf[1]!),
+          linearToSrgbByte(srgbToLinear(tb) * bcf[2]!),
+        );
         sawColor = true;
       } else if (flat) {
         triColors.push(flat[0], flat[1], flat[2]);
@@ -208,6 +253,61 @@ export function parseGltf(
   return { positions: new Float32Array(coords), triangleCount, ...(colors ? { colors } : {}) };
 }
 
+/**
+ * The encoded (PNG/JPEG) bytes of every image in a .glb / .gltf, indexed
+ * like doc.images — null where the bytes aren't reachable. The panel decodes
+ * these (createImageBitmap) and hands the pixels back to parseGlb/parseGltf.
+ * Never throws: a model with a broken texture should still import, just
+ * without that texture's colors.
+ */
+export function gltfImageBytes(
+  data: ArrayBuffer | string,
+  resolveBuffer?: BufferResolver,
+): (ArrayBuffer | null)[] {
+  try {
+    let json: string;
+    let bin: ArrayBuffer | null = null;
+    if (typeof data === 'string') {
+      json = data;
+    } else {
+      const view = new DataView(data);
+      if (data.byteLength < 12 || view.getUint32(0, true) !== GLB_MAGIC) return [];
+      let j: string | null = null;
+      let off = 12;
+      while (off + 8 <= data.byteLength) {
+        const len = view.getUint32(off, true);
+        const type = view.getUint32(off + 4, true);
+        const body = data.slice(off + 8, off + 8 + len);
+        if (type === CHUNK_JSON) j = new TextDecoder().decode(body);
+        else if (type === CHUNK_BIN && !bin) bin = body;
+        off += 8 + len + ((4 - (len % 4)) % 4);
+      }
+      if (!j) return [];
+      json = j;
+    }
+    const doc = JSON.parse(json) as GltfDoc;
+    const buffers: (ArrayBuffer | null)[] = (doc.buffers ?? []).map((b, i) => {
+      if (b.uri === undefined) return i === 0 ? bin : null;
+      if (b.uri.startsWith('data:')) return decodeDataUri(b.uri);
+      return resolveBuffer?.(b.uri) ?? null;
+    });
+    return (doc.images ?? []).map((img) => {
+      if (img.uri !== undefined) {
+        if (img.uri.startsWith('data:')) return decodeDataUri(img.uri);
+        return resolveBuffer?.(img.uri) ?? null;
+      }
+      if (img.bufferView === undefined) return null;
+      const bv = doc.bufferViews?.[img.bufferView];
+      const buf = bv ? buffers[bv.buffer ?? 0] : null;
+      if (!bv || !buf) return null;
+      const start = bv.byteOffset ?? 0;
+      return buf.slice(start, start + (bv.byteLength ?? 0));
+    });
+  } catch {
+    return [];
+  }
+}
+
 // ---------- internals ----------
 
 interface GltfDoc {
@@ -216,7 +316,14 @@ interface GltfDoc {
   scenes?: { nodes?: number[] }[];
   nodes?: GltfNode[];
   meshes?: { primitives?: GltfPrimitive[] }[];
-  materials?: { pbrMetallicRoughness?: { baseColorFactor?: number[] } }[];
+  materials?: {
+    pbrMetallicRoughness?: {
+      baseColorFactor?: number[];
+      baseColorTexture?: { index?: number; texCoord?: number };
+    };
+  }[];
+  textures?: { source?: number }[];
+  images?: { uri?: string; bufferView?: number; mimeType?: string }[];
   accessors?: GltfAccessor[];
   bufferViews?: { buffer?: number; byteOffset?: number; byteLength?: number; byteStride?: number }[];
   buffers?: { uri?: string; byteLength?: number }[];
@@ -318,8 +425,4 @@ function decodeDataUri(uri: string): ArrayBuffer | null {
 }
 
 /** Linear 0–1 → sRGB byte (glTF colors are linear; the palette wants display RGB). */
-function srgbByte(linear: number): number {
-  const l = Math.max(0, Math.min(1, linear));
-  const s = l <= 0.0031308 ? l * 12.92 : 1.055 * Math.pow(l, 1 / 2.4) - 0.055;
-  return Math.max(0, Math.min(255, Math.round(s * 255)));
-}
+const srgbByte = linearToSrgbByte;

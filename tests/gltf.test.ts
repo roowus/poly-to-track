@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { parseGlb, parseGltf } from '../src/mesh/gltf';
+import { parseGlb, parseGltf, gltfImageBytes } from '../src/mesh/gltf';
+import { sampleImage } from '../src/mesh/texture';
 import { meshBounds } from '../src/mesh/types';
 
 /**
@@ -13,14 +14,18 @@ function triangleDoc(opts: {
   baseColorFactor?: number[];
   node?: Record<string, unknown>; // extra node properties (matrix/TRS)
   omitScenes?: boolean;
+  uv?: number[][]; // per-vertex texcoords — adds TEXCOORD_0
+  textureUri?: string; // image by external URI (with opts.uv wires baseColorTexture)
 } = {}): { doc: Record<string, unknown>; bin: ArrayBuffer } {
   const positions = new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]);
   const indices = new Uint16Array([0, 1, 2, 0]); // padded to 4 bytes
   const colorComps = opts.color0?.[0]?.length ?? 0;
   const colors = opts.color0 ? new Float32Array(opts.color0.flat()) : null;
+  const uvs = opts.uv ? new Float32Array(opts.uv.flat()) : null;
 
   const parts: ArrayBuffer[] = [positions.buffer, indices.buffer];
   if (colors) parts.push(colors.buffer as ArrayBuffer);
+  if (uvs) parts.push(uvs.buffer as ArrayBuffer);
   const total = parts.reduce((n, p) => n + p.byteLength, 0);
   const bin = new ArrayBuffer(total);
   const bytes = new Uint8Array(bin);
@@ -46,6 +51,12 @@ function triangleDoc(opts: {
     accessors.push({ bufferView: 2, componentType: 5126, count: 3, type: colorComps === 4 ? 'VEC4' : 'VEC3' });
     attributes.COLOR_0 = 2;
   }
+  if (uvs) {
+    const partIdx = colors ? 3 : 2;
+    bufferViews.push({ buffer: 0, byteOffset: offsets[partIdx], byteLength: uvs.byteLength });
+    accessors.push({ bufferView: bufferViews.length - 1, componentType: 5126, count: 3, type: 'VEC2' });
+    attributes.TEXCOORD_0 = accessors.length - 1;
+  }
   const primitive: Record<string, unknown> = { attributes, indices: 1 };
   const doc: Record<string, unknown> = {
     asset: { version: '2.0' },
@@ -56,9 +67,16 @@ function triangleDoc(opts: {
     nodes: [{ mesh: 0, ...(opts.node ?? {}) }],
     ...(opts.omitScenes ? {} : { scene: 0, scenes: [{ nodes: [0] }] }),
   };
-  if (opts.baseColorFactor) {
+  if (opts.baseColorFactor || opts.textureUri) {
     primitive.material = 0;
-    doc.materials = [{ pbrMetallicRoughness: { baseColorFactor: opts.baseColorFactor } }];
+    const pbr: Record<string, unknown> = {};
+    if (opts.baseColorFactor) pbr.baseColorFactor = opts.baseColorFactor;
+    if (opts.textureUri) {
+      pbr.baseColorTexture = { index: 0 };
+      doc.textures = [{ source: 0 }];
+      doc.images = [{ uri: opts.textureUri }];
+    }
+    doc.materials = [{ pbrMetallicRoughness: pbr }];
   }
   return { doc, bin };
 }
@@ -213,5 +231,84 @@ describe('parseGltf (JSON)', () => {
     const prim = (doc.meshes as { primitives: Record<string, unknown>[] }[])[0]!.primitives[0]!;
     prim.mode = 1; // LINES
     expect(() => parseGlb(toGlb(doc, bin))).toThrow(/no triangles/i);
+  });
+});
+
+describe('glTF textures', () => {
+  // 2×2 texture: top row red|green, bottom row blue|white (sRGB bytes).
+  const IMG = {
+    width: 2,
+    height: 2,
+    data: new Uint8Array([
+      255, 0, 0, 255,   0, 255, 0, 255,
+      0, 0, 255, 255,   255, 255, 255, 255,
+    ]),
+  };
+  const UV_TOP_LEFT = [[0.1, 0.1], [0.3, 0.2], [0.2, 0.3]]; // centroid (0.2, 0.2)
+
+  it('samples baseColorTexture at the UV centroid', () => {
+    const { doc, bin } = triangleDoc({ uv: UV_TOP_LEFT, textureUri: 'tex.png' });
+    const mesh = parseGlb(toGlb(doc, bin), undefined, [IMG]);
+    expect([...mesh.colors!]).toEqual([255, 0, 0]); // glTF v=0.2 = top row
+  });
+
+  it('multiplies the texture by baseColorFactor in linear space', () => {
+    const { doc, bin } = triangleDoc({
+      uv: [[0.6, 0.6], [0.9, 0.7], [0.7, 0.9]], // centroid in the white texel
+      textureUri: 'tex.png',
+      baseColorFactor: [1, 0, 0, 1],
+    });
+    const mesh = parseGlb(toGlb(doc, bin), undefined, [IMG]);
+    expect([...mesh.colors!]).toEqual([255, 0, 0]); // white texel × red factor
+  });
+
+  it('COLOR_0 vertex colors beat the texture', () => {
+    const { doc, bin } = triangleDoc({
+      uv: UV_TOP_LEFT,
+      textureUri: 'tex.png',
+      color0: [[0, 0, 1], [0, 0, 1], [0, 0, 1]],
+    });
+    const mesh = parseGlb(toGlb(doc, bin), undefined, [IMG]);
+    expect([...mesh.colors!]).toEqual([0, 0, 255]);
+  });
+
+  it('an undecoded image falls back to the flat factor', () => {
+    const { doc, bin } = triangleDoc({
+      uv: UV_TOP_LEFT, textureUri: 'tex.png', baseColorFactor: [0, 1, 0, 1],
+    });
+    const mesh = parseGlb(toGlb(doc, bin), undefined, [null]);
+    expect([...mesh.colors!]).toEqual([0, 255, 0]);
+  });
+
+  it('UV wrap repeats outside 0–1', () => {
+    expect(sampleImage(IMG, 1.1, 2.1)).toEqual([255, 0, 0]); // wraps to (0.1, 0.1)
+    expect(sampleImage(IMG, -0.4, 0.1)).toEqual([0, 255, 0]); // u −0.4 → 0.6
+  });
+
+  it('gltfImageBytes extracts bufferView-embedded and data:-URI images', () => {
+    const fakePng = new Uint8Array([137, 80, 78, 71, 1, 2, 3, 4]);
+    const { doc, bin } = triangleDoc();
+    // Append the "png" to the bin buffer as an extra bufferView image.
+    const merged = new Uint8Array(bin.byteLength + fakePng.length);
+    merged.set(new Uint8Array(bin), 0);
+    merged.set(fakePng, bin.byteLength);
+    (doc.bufferViews as Record<string, unknown>[]).push({
+      buffer: 0, byteOffset: bin.byteLength, byteLength: fakePng.length,
+    });
+    (doc.buffers as { byteLength: number }[])[0]!.byteLength = merged.byteLength;
+    doc.images = [
+      { bufferView: (doc.bufferViews as unknown[]).length - 1, mimeType: 'image/png' },
+      { uri: 'data:image/png;base64,' + Buffer.from(fakePng).toString('base64') },
+      { uri: 'external.png' },
+    ];
+    const out = gltfImageBytes(toGlb(doc, merged.buffer as ArrayBuffer));
+    expect(out).toHaveLength(3);
+    expect([...new Uint8Array(out[0]!)]).toEqual([...fakePng]);
+    expect([...new Uint8Array(out[1]!)]).toEqual([...fakePng]);
+    expect(out[2]).toBeNull(); // no resolver given
+    // With a resolver, the external URI resolves too.
+    const out2 = gltfImageBytes(toGlb(doc, merged.buffer as ArrayBuffer), (uri) =>
+      uri === 'external.png' ? fakePng.buffer as ArrayBuffer : null);
+    expect(out2[2]).not.toBeNull();
   });
 });
