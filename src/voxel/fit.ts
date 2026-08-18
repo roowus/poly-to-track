@@ -48,11 +48,39 @@ const HALF_BLOCK_ROT: Record<string, number> = {
 const QUARTER_BLOCK_ROT = [2, 3, 0, 1] as const; // filled dir +x → keep +x edge → rot 2, etc.
 
 /**
- * VISUALLY CALIBRATED (not derivable from footprints): rotation that makes
- * BlockSlopeUp ascend toward DIRS[i]. If a play-test shows ramps facing the
- * wrong way, fix this one table.
+ * Rotation that makes BlockSlopeUp ascend toward DIRS[i]. DERIVED from the
+ * catalog (chunk 2600): BlockSlopeUpLong keeps its y=1 occupancy at z=−6..−4
+ * of a footprint spanning z=−6..1 — the ramp ascends toward −z at rotation 0,
+ * i.e. DIRS[3]. The tile rotation (dx,dz)→(dz,−dx) about Y+ then gives
+ * ascend-direction → rotation: [+x→? …] as indexed below. (The previous
+ * visually-calibrated [1,0,3,2] was 180° off for every direction — the
+ * "curved ramp constantly placed 180° offset" report.)
  */
-const SLOPE_UP_ROT = [1, 0, 3, 2] as const;
+const SLOPE_UP_ROT = [3, 2, 1, 0] as const;
+
+/**
+ * BlockOuterCorner (188) rounds a convex corner: rotation 0 keeps an L solid
+ * toward +x/+z (the diagonal quadrant at (−x,−z) is cut). For a corner whose
+ * OPEN diagonal quadrant is (ox,oz), rotate the CUT to face it:
+ * (dx,dz)→(dz,−dx) rotates (−1,−1)→(−1,1)→(1,1)→(1,−1).
+ */
+const OUTER_CORNER_ROT: Record<string, number> = {
+  '-1,-1': 0,
+  '-1,1': 1,
+  '1,1': 2,
+  '1,-1': 3,
+};
+
+/**
+ * BlockInnerCorner (155) fills a concave step: rotation 0 keeps the −x and
+ * −z edges full (solid L meeting at (−2,−2), stepping toward (+1,+1)).
+ */
+const INNER_CORNER_ROT: Record<string, number> = {
+  '-1,-1': 0,
+  '-1,1': 1,
+  '1,1': 2,
+  '1,-1': 3,
+};
 
 export interface FittedCell {
   readonly partId: number;
@@ -101,7 +129,9 @@ export function fitShapes(grid: VoxelGrid): FitResult {
     }
 
     // Convex corner: two perpendicular open sides and an open diagonal
-    // between them — keep the opposite triangle.
+    // between them. A true 90° corner gets the rounded OuterCorner piece
+    // (only the corner cell is diagonally cut — sides stay flush) when the
+    // run continues past it; otherwise the diagonal HalfBlock.
     if (openCount === 2) {
       for (let i = 0; i < 4; i++) {
         const j = (i + 1) % 4;
@@ -109,9 +139,35 @@ export function fitShapes(grid: VoxelGrid): FitResult {
           const ox = DIRS[i]!.dx + DIRS[j]!.dx; // toward the open corner
           const oz = DIRS[i]!.dz + DIRS[j]!.dz;
           if (!filled(x + ox, y, z + oz)) {
-            const rot = HALF_BLOCK_ROT[`${-ox},${-oz}`];
-            if (rot !== undefined) return { partId: PART.HalfBlock, rotation: rot };
+            const half = HALF_BLOCK_ROT[`${-ox},${-oz}`];
+            if (half === undefined) break;
+            // OuterCorner keeps both side edges flush — the two neighbors
+            // BEYOND the corner along each side must be material, else the
+            // rounded cut would eat volume the silhouette needs.
+            const i2 = (i + 2) % 4; // continue past the filled side opposite open[i]
+            const j2 = (j + 2) % 4;
+            const sideA = filled(x + DIRS[i2]!.dx, y, z + DIRS[i2]!.dz);
+            const sideB = filled(x + DIRS[j2]!.dx, y, z + DIRS[j2]!.dz);
+            if (sideA && sideB) {
+              return { partId: PART.OuterCorner, rotation: OUTER_CORNER_ROT[`${ox},${oz}`]! };
+            }
+            return { partId: PART.HalfBlock, rotation: half };
           }
+        }
+      }
+    }
+
+    // Concave step (one open side, the diagonal across it open, the
+    // diagonal beside it filled): the InnerCorner piece fills the notch.
+    if (openCount === 1) {
+      const i = open.indexOf(true);
+      const ox = DIRS[i]!.dx, oz = DIRS[i]!.dz; // toward the open side
+      for (const [ax, az] of [[oz, -ox], [-oz, ox]] as const) { // the two diagonals across the open side
+        if (filled(x + ax, y, z + az) && !filled(x + ax - ox, y, z + az - oz)) {
+          // filled diagonal neighbor whose side neighbor toward us is open:
+          // this cell is the inner corner of an L-step.
+          const rot = INNER_CORNER_ROT[`${-ax + ox},${-az + oz}`];
+          if (rot !== undefined) return { partId: PART.InnerCorner, rotation: rot };
         }
       }
     }

@@ -29,7 +29,7 @@ import type { VoxelGrid } from './voxelize';
  *     yellow trim) is not lighting and survives. This is the "mountain goes
  *     yellow/red" killer.
  */
-export const MAX_SURVIVING_ENTRIES = 3;
+export const MAX_SURVIVING_ENTRIES = 4;
 export const MIN_COVERAGE = 0.05;
 export const NEIGHBOR_RATIO = 0.45;
 export const LIGHTING_HUE_GAP = 0.2; // 72° of hue — adjacent palette steps

@@ -119,6 +119,12 @@ describe('buildParts', () => {
     // The ramp fills the empty cell above the lower run: x=1 (tile 4), y=1 (+1 pad lift = 2).
     expect(ramp!.x).toBe(4);
     expect(ramp!.y).toBe(2);
+    // Derived from the catalog footprint (BlockSlopeUpLong y=1 at z=−6..−4):
+    // the ramp ascends toward its FILLED neighbor — −x here = DIRS[2] → rot 1.
+    // The old visually-calibrated table put rot 3 — a 180° flip, the
+    // "curved ramp constantly placed 180° offset" bug.
+    expect(ramp!.rotation).toBe(1);
+    expect(ramp!.rotationAxis).toBe(0); // YPositive
   });
 
   it('has NO hard part limit — huge grids build fine (soft warning only)', () => {
@@ -365,15 +371,50 @@ describe('dominant-color quantization', () => {
 });
 
 describe('fitShapes', () => {
-  it('turns convex plan corners into HalfBlocks and keeps straight edges as Blocks', () => {
-    // One 3×3 solid layer: 4 corners → HalfBlock, 4 edges + center → Block.
+  it('rounds 3×3 plan corners with OuterCorners and keeps edges as Blocks', () => {
+    // One 3×3 solid layer: 4 corners → rounded OuterCorner (sides continue
+    // past each corner), 4 edges + center → Block.
     const grid = gridOf([
       ['###', '###', '###'],
     ]);
     const fit = fitShapes(grid);
     const kinds = [...fit.filledParts.values()].map((c) => c.partId);
-    expect(kinds.filter((k) => k === PART.HalfBlock)).toHaveLength(4);
+    expect(kinds.filter((k) => k === PART.OuterCorner)).toHaveLength(4);
     expect(kinds.filter((k) => k === PART.Block)).toHaveLength(5);
+  });
+
+  it('corner OuterCorner rotations are all distinct and cut the open quadrant', () => {
+    const grid = gridOf([
+      ['###', '###', '###'],
+    ]);
+    const fit = fitShapes(grid);
+    const rots = [...fit.filledParts.values()]
+      .filter((c) => c.partId === PART.OuterCorner)
+      .map((c) => c.rotation)
+      .sort();
+    expect(rots).toEqual([0, 1, 2, 3]);
+  });
+
+  it('a 2×2 block rounds into four OuterCorners', () => {
+    const grid = gridOf([
+      ['##', '##'],
+    ]);
+    const fit = fitShapes(grid);
+    const kinds = [...fit.filledParts.values()].map((c) => c.partId);
+    expect(kinds.filter((k) => k === PART.OuterCorner)).toHaveLength(4);
+  });
+
+  it('fills a concave L-notch with an InnerCorner', () => {
+    // A 3×3 layer with the +x column removed below the top row: the cell
+    // inside the notch is a concave corner → InnerCorner; the row tip
+    // beyond it is a wall tip → QuarterBlock.
+    const grid = gridOf([
+      ['###', '##.', '##.'],
+    ]);
+    const fit = fitShapes(grid);
+    const kinds = [...fit.filledParts.values()].map((c) => c.partId);
+    expect(kinds.filter((k) => k === PART.InnerCorner)).toHaveLength(1);
+    expect(kinds.filter((k) => k === PART.QuarterBlock)).toHaveLength(1);
   });
 
   it('turns wall tips into QuarterBlocks', () => {
@@ -385,18 +426,6 @@ describe('fitShapes', () => {
     const kinds = [...fit.filledParts.values()].map((c) => c.partId);
     expect(kinds.filter((k) => k === PART.QuarterBlock)).toHaveLength(2);
     expect(kinds.filter((k) => k === PART.Block)).toHaveLength(1);
-  });
-
-  it('corner HalfBlock rotations are all distinct', () => {
-    const grid = gridOf([
-      ['###', '###', '###'],
-    ]);
-    const fit = fitShapes(grid);
-    const rots = [...fit.filledParts.values()]
-      .filter((c) => c.partId === PART.HalfBlock)
-      .map((c) => c.rotation)
-      .sort();
-    expect(rots).toEqual([0, 1, 2, 3]);
   });
 
   it('does not ramp gaps between two runs (only single steps)', () => {
