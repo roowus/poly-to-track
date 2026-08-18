@@ -59,6 +59,18 @@ const QUARTER_BLOCK_ROT = [2, 3, 0, 1] as const; // filled dir +x → keep +x ed
 const SLOPE_UP_ROT = [3, 2, 1, 0] as const;
 
 /**
+ * BlockSlopeUpLong (151) shares BlockSlopeUp's ascend direction at rotation 0
+ * (top layer toward −z), so the same rotation table applies. Its base spans a
+ * SECOND cell beyond the anchor: the anchor is the LOW cell and the extension
+ * (toward the ascend direction) is the HIGH cell — a 2-cell ramp rising one
+ * unit, half as steep as BlockSlopeUp. It replaces the steep 1-cell ramp when
+ * the terrain genuinely descends gently: the cell beyond the step's high run
+ * is open at step level AND open one level above it (a sheer drop would clip
+ * the long ramp's tail).
+ */
+const SLOPE_LONG_PART = 151;
+
+/**
  * BlockOuterCorner (188) rounds a convex corner: rotation 0 keeps an L solid
  * toward +x/+z (the diagonal quadrant at (−x,−z) is cut). For a corner whose
  * OPEN diagonal quadrant is (ox,oz), rotate the CUT to face it:
@@ -187,7 +199,23 @@ export function fitShapes(grid: VoxelGrid): FitResult {
       }
     }
     if (dir === -1) return null;
-    return { partId: PART.BlockSlopeUp, rotation: SLOPE_UP_ROT[dir]! };
+    const rot = SLOPE_UP_ROT[dir]!;
+
+    // Gentle terrain: the long ramp (151) shares the steep ramp's anchor
+    // cell and ascend rotation, but its base extends one cell BACKWARD
+    // (away from the rise), halving the surface slope. Use it whenever that
+    // backward cell is open air above terrain — the tail needs the space and
+    // rests on it. Otherwise the terrain is sheer behind the gap (a ledge,
+    // a corner) and the steep ramp is the correct piece.
+    const d = DIRS[dir]!;
+    const backX = x - d.dx, backZ = z - d.dz;
+    if (
+      !filled(backX, y, backZ) && !filled(backX, y + 1, backZ)
+      && filled(backX, y - 1, backZ)
+    ) {
+      return { partId: SLOPE_LONG_PART, rotation: rot };
+    }
+    return { partId: PART.BlockSlopeUp, rotation: rot };
   }
 }
 

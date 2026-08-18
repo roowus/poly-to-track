@@ -438,4 +438,38 @@ describe('fitShapes', () => {
     const fit = fitShapes(grid);
     expect(fit.rampParts.size).toBe(0);
   });
+
+  it('gentle rises use the 2-cell long ramp at half steepness', () => {
+    // Terrain rising one level per two cells: tier-1 body at y0 (x0..5),
+    // tier-2 body at y1 (x4..7), tier-3 at y2 (x6..7). The step cell
+    // (x4,y1) is empty with its only filled neighbor (x5,y1) at DIRS[0],
+    // beyond (x6,y1) open both levels, supported at y0, and the rise
+    // continues (x5,y2 filled) → long ramp (151), not the steep 85.
+    const grid = gridOf([
+      ['######..'],
+      ['....####'],
+      ['......##'],
+    ]);
+    const fit = fitShapes(grid);
+    const longs = [...fit.rampParts.entries()].filter(([, c]) => c.partId === 151);
+    expect(longs.length).toBeGreaterThan(0);
+    // No steep ramp at the same anchor cells.
+    const steeps = [...fit.rampParts.entries()].filter(([, c]) => c.partId === 85);
+    for (const [k] of longs) {
+      expect(steeps.some(([sk]) => sk === k)).toBe(false);
+    }
+  });
+
+  it('steep terrain right behind the gap keeps the steep ramp', () => {
+    // The cell behind the gap is FILLED (terrain steps up again immediately)
+    // — the long ramp's tail has no room, so the steep ramp is correct.
+    // y0: x0..4; y1: x0..1 + x3..4 → gap at (x2,y1) with filled back (x1,y1).
+    const grid = gridOf([
+      ['#####'],
+      ['##.##'],
+    ]);
+    const fit = fitShapes(grid);
+    const longs = [...fit.rampParts.values()].filter((c) => c.partId === 151);
+    expect(longs.length).toBe(0);
+  });
 });
