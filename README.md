@@ -3,8 +3,9 @@
 <img src="assets/icon.svg" alt="poly-to-track icon" width="96" align="right">
 
 A [TSPML](https://github.com/roowus/TSPML) mod that imports 3D models
-(**STL** / **OBJ**) into [PolyTrack](https://www.kodub.com/apps/polytrack) as
-LEGO-style block builds — think **Schematica / Axiom for PolyTrack**.
+(**STL** / **OBJ + MTL** / **glTF** / **GLB**) into
+[PolyTrack](https://www.kodub.com/apps/polytrack) as LEGO-style block
+builds — think **Schematica / Axiom for PolyTrack**.
 
 Load a model, watch the live voxel preview (with a ground grid so you can
 see how the build will sit), dial in resolution / any-angle rotation / scale
@@ -14,7 +15,8 @@ translucent ghost of the model appears in the world you're editing wearing
 the square frames to rotate about any axis at any angle, the tip boxes to
 scale a single axis (or the white center box for uniform) — then Apply does
 the one real placement, exactly like placing a Schematica ghost.
-Colored models (OBJ vertex colors, colored binary STL) are mapped
+Colored models (OBJ vertex colors or MTL materials, glTF/GLB vertex colors
+or material base colors, colored binary STL) are mapped
 per-block onto the game's palette. The builds use the game's full shape
 vocabulary (blocks, half/quarter blocks, slopes) so curved models aren't
 staircases of slabs.
@@ -51,7 +53,7 @@ editor.
 
 | Control | What it does |
 | --- | --- |
-| **Load STL / OBJ** | Parses the file (binary + ASCII STL; OBJ with quads/negative indices) |
+| **Load STL / OBJ / glTF** | Parses the file(s): binary + ASCII STL; OBJ with quads/negative indices (select the `.mtl` alongside it for material colors); glTF 2.0 both as self-contained `.glb` and as `.gltf` JSON (embedded buffers work alone; select external `.bin` files together with it) |
 | Preview canvas | Drag to orbit the voxelized model, drawn as true isometric cubes locked to the green ground grid (the track floor) — one grid square = one block cell at the current resolution |
 | **Resolution** (4–256) | Longest model axis maps to this many blocks |
 | **Fill interior** | Flood-fill the inside (off by default — hollow shells are far fewer parts) |
@@ -61,7 +63,7 @@ editor.
 Every slider's number is a button — **click it to type an exact value**
 (37°, ×1.55…), free of the drag snap. Enter or clicking away commits,
 Escape cancels.
-| **Use the model's own colors** | Maps OBJ vertex colors / STL facet colors per block onto the game palette (interior blocks inherit the nearest surface color) |
+| **Use the model's own colors** | Maps OBJ vertex/MTL colors, glTF vertex/material colors and STL facet colors per block onto the game palette (interior blocks inherit the nearest surface color) |
 | **Block color** | Fallback / flat color: Default + the game's 9 custom block colors |
 | **⤓ Insert into editor** | Stages the model as a viewport ghost and enters transform mode |
 | **Save as track** | Secondary path: encodes + registers a standalone track |
@@ -107,7 +109,7 @@ enormous — lower the resolution or uncheck *Fill interior* if that matters.
 ## How it works
 
 ```
-STL/OBJ (positions + per-triangle colors) → TriangleMesh
+STL/OBJ+MTL/glTF/GLB (positions + per-triangle colors) → TriangleMesh
 → transform (rotate/scale) → voxelize
   (SAT triangle-box surface pass + 6-connected exterior flood fill,
    anisotropic grid: 4 y-cells per block so builds aren't flattened;
@@ -158,7 +160,7 @@ pnpm build       # esbuild → dist/entrypoint.js (committed for URL import)
 Repo layout:
 
 - `src/codec/` — PolyTrack2 encode/decode + base-62 bitstream + part/color tables
-- `src/mesh/` — STL/OBJ parsers, transforms
+- `src/mesh/` — STL, OBJ+MTL and glTF/GLB parsers, transforms
 - `src/voxel/` — voxelizer (surface + solid fill), shape fitting, voxels → parts
 - `src/game/` — captured-track access + the insert session (move/rotate/apply)
 - `src/ui/` — the in-game panel + canvas voxel preview

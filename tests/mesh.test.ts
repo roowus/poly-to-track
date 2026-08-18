@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { parseObj } from '../src/mesh/obj';
+import { parseMtl, parseObj } from '../src/mesh/obj';
 import { parseStl } from '../src/mesh/stl';
 import { applyTransform, IDENTITY } from '../src/mesh/transform';
 import { meshBounds } from '../src/mesh/types';
@@ -87,6 +87,67 @@ describe('parseObj', () => {
 
   it('emits no color channel when no vertex has one', () => {
     expect(parseObj(CUBE_OBJ).colors).toBeUndefined();
+  });
+
+  it('reports mtllib names so the panel can ask for the sidecar', () => {
+    const mesh = parseObj('mtllib my materials.mtl\nv 0 0 0\nv 1 0 0\nv 0 1 0\nf 1 2 3');
+    expect(mesh.mtlLibs).toEqual(['my materials.mtl']);
+    expect(mesh.colors).toBeUndefined(); // named but unresolved ⇒ still colorless
+  });
+});
+
+describe('parseObj + MTL', () => {
+  const MTL = `
+newmtl red
+Kd 1.0 0.0 0.0
+newmtl blue
+Kd 0.0 0.0 1.0
+newmtl bare
+`;
+  const OBJ = `
+mtllib cube.mtl
+v 0 0 0
+v 1 0 0
+v 0 1 0
+v 2 0 0
+v 3 0 0
+v 2 1 0
+v 4 0 0
+v 5 0 0
+v 4 1 0
+usemtl red
+f 1 2 3
+usemtl blue
+f 4 5 6
+usemtl missing
+f 7 8 9
+`;
+
+  it('parses Kd diffuse colors into byte triples', () => {
+    const mats = parseMtl(MTL);
+    expect(mats.get('red')).toEqual([255, 0, 0]);
+    expect(mats.get('blue')).toEqual([0, 0, 255]);
+    expect(mats.get('bare')).toEqual([230, 230, 230]); // no Kd → near-white
+  });
+
+  it('usemtl colors the faces that follow it', () => {
+    const mesh = parseObj(OBJ, parseMtl(MTL));
+    expect(mesh.colors).toBeDefined();
+    expect([...mesh.colors!.slice(0, 3)]).toEqual([255, 0, 0]);
+    expect([...mesh.colors!.slice(3, 6)]).toEqual([0, 0, 255]);
+    expect([...mesh.colors!.slice(6, 9)]).toEqual([184, 184, 184]); // unknown material → gray
+  });
+
+  it('vertex colors win over the material', () => {
+    const obj = 'mtllib m.mtl\nusemtl red\nv 0 0 0 0 1 0\nv 1 0 0 0 1 0\nv 0 1 0 0 1 0\nf 1 2 3';
+    const mesh = parseObj(obj, parseMtl(MTL));
+    expect([...mesh.colors!]).toEqual([0, 255, 0]);
+  });
+
+  it('without the materials map usemtl is inert', () => {
+    const mesh = parseObj(OBJ);
+    expect(mesh.colors).toBeUndefined();
+    expect(mesh.mtlLibs).toEqual(['cube.mtl']);
   });
 });
 

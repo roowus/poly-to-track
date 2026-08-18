@@ -32,8 +32,9 @@ import { stageParts, translateParts, type InsertSession } from '../game/insert';
 import { countOverlaps } from '../game/overlap';
 import { findGameWindow, getCapturedRenderer, getCapturedTrack, pickFreeOffsetCells, type GameTrack } from '../game/track';
 import { createUndoBridge, isTypingTarget, type UndoBridge } from '../game/undo';
-import { parseObj } from '../mesh/obj';
+import { parseMtl, parseObj } from '../mesh/obj';
 import { parseStl } from '../mesh/stl';
+import { parseGlb, parseGltf } from '../mesh/gltf';
 import { applyTransform, IDENTITY, type MeshTransform } from '../mesh/transform';
 import { meshBounds, type TriangleMesh } from '../mesh/types';
 import { buildParts, PARTS_WARNING, type BuildOptions } from '../voxel/build';
@@ -540,13 +541,14 @@ export function createPanel(api: TspmlApi): Panel {
     // file
     const fileInput = doc.createElement('input');
     fileInput.type = 'file';
-    fileInput.accept = '.stl,.obj';
+    fileInput.accept = '.stl,.obj,.mtl,.glb,.gltf,.bin';
+    fileInput.multiple = true; // OBJ+MTL / glTF+bin travel together
     fileInput.style.display = 'none';
     fileInput.addEventListener('change', () => {
-      const f = fileInput.files?.[0];
-      if (f) void loadFile(f);
+      const fs = fileInput.files;
+      if (fs && fs.length > 0) void loadFiles(Array.from(fs));
     });
-    const fileBtn = btn(doc, 'Load STL / OBJ…', () => fileInput.click());
+    const fileBtn = btn(doc, 'Load STL / OBJ / glTF…', () => fileInput.click());
     fileBtn.classList.add('primary');
     fileLabel = doc.createElement('div');
     fileLabel.className = 'ptt-note';
@@ -740,14 +742,48 @@ export function createPanel(api: TspmlApi): Panel {
 
   // ---------- behaviour ----------
 
-  async function loadFile(file: File): Promise<void> {
+  async function loadFiles(files: File[]): Promise<void> {
     try {
+      // The model is the one .stl/.obj/.glb/.gltf in the selection; everything
+      // else rides along as sidecars (.mtl for OBJ, .bin buffers for .gltf).
+      const isModel = (n: string) => /\.(stl|obj|glb|gltf)$/i.test(n);
+      const file = files.find((f) => isModel(f.name)) ?? files[0]!;
       const lower = file.name.toLowerCase();
-      mesh = lower.endsWith('.obj') ? parseObj(await file.text()) : parseStl(await file.arrayBuffer());
-      meshName = file.name.replace(/\.(stl|obj)$/i, '');
+      let hint = '';
+      if (lower.endsWith('.obj')) {
+        // Merge every selected .mtl — OBJs can name several libraries.
+        const materials = new Map<string, readonly [number, number, number]>();
+        for (const f of files) {
+          if (!/\.mtl$/i.test(f.name)) continue;
+          for (const [k, v] of parseMtl(await f.text())) materials.set(k, v);
+        }
+        const obj = parseObj(await file.text(), materials);
+        if (obj.mtlLibs.length > 0 && materials.size === 0 && !obj.colors) {
+          hint = ` · select ${obj.mtlLibs.join(', ')} too for colors`;
+        }
+        mesh = obj;
+      } else if (lower.endsWith('.glb') || lower.endsWith('.gltf')) {
+        // Sidecar lookup by basename — glTF buffer URIs are relative paths
+        // (possibly %-encoded); the picker only gives us flat filenames.
+        const sidecars = new Map<string, ArrayBuffer>();
+        for (const f of files) {
+          if (f !== file) sidecars.set(f.name.toLowerCase(), await f.arrayBuffer());
+        }
+        const resolveBuffer = (uri: string): ArrayBuffer | null => {
+          let base = uri.split(/[/\\]/).pop() ?? uri;
+          try { base = decodeURIComponent(base); } catch { /* keep raw */ }
+          return sidecars.get(base.toLowerCase()) ?? null;
+        };
+        mesh = lower.endsWith('.glb')
+          ? parseGlb(await file.arrayBuffer(), resolveBuffer)
+          : parseGltf(await file.text(), resolveBuffer);
+      } else {
+        mesh = parseStl(await file.arrayBuffer());
+      }
+      meshName = file.name.replace(/\.(stl|obj|glb|gltf)$/i, '');
       if (nameInput && !nameInput.value) nameInput.value = meshName;
       const colorNote = mesh.colors ? ' · has colors' : '';
-      if (fileLabel) fileLabel.textContent = `${file.name} — ${mesh.triangleCount.toLocaleString()} triangles${colorNote}`;
+      if (fileLabel) fileLabel.textContent = `${file.name} — ${mesh.triangleCount.toLocaleString()} triangles${colorNote}${hint}`;
       setPose(identityPose()); // rotation/scale are per-model — new model, fresh pose
       revoxel();
     } catch (err) {
