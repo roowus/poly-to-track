@@ -39,6 +39,7 @@ import type { DecodedImage } from '../mesh/texture';
 import { applyTransform, IDENTITY, type MeshTransform } from '../mesh/transform';
 import { meshBounds, type TriangleMesh } from '../mesh/types';
 import { buildParts, PARTS_WARNING, type BuildOptions } from '../voxel/build';
+import { quantizeGridColors } from '../voxel/palette';
 import { voxelize, type VoxelGrid } from '../voxel/voxelize';
 import type { TspmlApi } from '../tspml-api';
 import { createVoxelPreview, type VoxelPreview } from './preview';
@@ -875,6 +876,11 @@ export function createPanel(api: TspmlApi): Panel {
       p[i + 2] = p[i + 2]! * sz;
     }
     grid = voxelize(rotated, { resolution: effRes, solid: settings.solid });
+    // Quantize against the model's own dominant colors BEFORE anything reads
+    // them — preview, ghost and placed parts then all agree, and baked-lighting
+    // hue shifts stay inside their material instead of scattering across
+    // saturated swatches (the "mountain goes yellow/red" bug).
+    if (settings.useModelColors !== false) quantizeGridColors(grid);
     refreshPreview();
     refreshStats();
     rebuildSessionParts();

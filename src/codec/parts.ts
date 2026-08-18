@@ -78,12 +78,19 @@ export const COLOR_SWATCHES: readonly { id: number; name: string; hex: string }[
  * out white" bug: pale tints (skin, pastels, light texture areas) all score
  * nearest the single light swatch.
  */
-export function nearestColorId(r: number, g: number, b: number): number {
+export function nearestColorId(r: number, g: number, b: number, among?: ReadonlySet<number>): number {
   const [h, s, v] = rgbToHsv(r, g, b);
-  if (s < 0.05 || v < 0.1) return v > 0.4 ? COLOR.Default : COLOR.Custom0;
+  if (s < 0.05 || v < 0.1) {
+    // Grays pick by value; when restricted to a subset that excludes the
+    // natural gray, score the allowed chromatic entries instead (hue noise
+    // for one stray voxel beats returning a non-allowed id).
+    const gray = v > 0.4 ? COLOR.Default : COLOR.Custom0;
+    if (!among || among.has(gray)) return gray;
+  }
   let best: number = COLOR.Default;
   let bestScore = Infinity;
   for (const sw of COLOR_SWATCHES) {
+    if (among && !among.has(sw.id)) continue;
     const [sh0, ss, sv] = swatchHsv(sw.id);
     if (ss === 0) continue; // grays handled above
     const sh = SWATCH_MATCH_HUE.get(sw.id) ?? sh0;

@@ -3,6 +3,7 @@ import { COLOR, nearestColorId, PART } from '../src/codec/parts';
 import { parseObj } from '../src/mesh/obj';
 import { buildParts, PARTS_WARNING } from '../src/voxel/build';
 import { fitShapes } from '../src/voxel/fit';
+import { quantizeGridColors } from '../src/voxel/palette';
 import { voxelize, type VoxelGrid } from '../src/voxel/voxelize';
 
 /** Build a grid from string layers: rows are z, chars are x, layers are y. */
@@ -283,6 +284,83 @@ describe('per-voxel texture sampling', () => {
     const mesh = parseObj(obj, mats);
     expect(mesh.texturing).toBeUndefined();
     expect([...mesh.colors!]).toEqual([255, 0, 255]);
+  });
+});
+
+describe('dominant-color quantization', () => {
+  /** A 12×12 layer colored like a lit mountain: two big materials (grass,
+   * rock) at ~50% coverage each, baked-lighting shade variants at a few
+   * percent (yellow-shifted highlights, a warm ridge tint), and stray
+   * single-voxel off-colors (paintball spots). */
+  function mountainGrid(): VoxelGrid {
+    const nx = 12, nz = 12;
+    const cells = new Uint8Array(nx * nz).fill(1);
+    const c = new Uint8Array(nx * nz * 3);
+    const set = (i: number, r: number, g: number, b: number) => {
+      c[i * 3] = r; c[i * 3 + 1] = g; c[i * 3 + 2] = b;
+    };
+    for (let z = 0; z < nz; z++) {
+      for (let x = 0; x < nx; x++) {
+        const i = x + z * nx;
+        x + z * nx < (nx * nz) / 2 ? set(i, 60, 120, 60) : set(i, 120, 90, 55);
+      }
+    }
+    // ~4% each: sunlit + half-lit grass, sunlit rock — under MIN_COVERAGE.
+    for (let k = 0; k < 6; k++) set(k * 7 % 72, 130, 170, 70);
+    for (let k = 0; k < 5; k++) set(k * 11 % 72, 105, 150, 65);
+    for (let k = 0; k < 6; k++) set(72 + (k * 7 % 72), 160, 130, 60);
+    // Stray spots: 2 red among grass, 1 magenta among rock.
+    set(20, 220, 60, 60);
+    set(50, 220, 60, 60);
+    set(100, 220, 60, 220);
+    return { nx, ny: 1, nz, cells, filledCount: nx * nz, yAspect: 1, colors: c };
+  }
+
+  it('merges lighting shades into their materials — no scattered yellow/red', () => {
+    const grid = mountainGrid();
+    const out = quantizeGridColors(grid)!;
+    expect(out).toBeDefined();
+    const hues = new Set<number>();
+    for (let i = 0; i < 144; i++) {
+      hues.add(nearestColorId(out[i * 3]!, out[i * 3 + 1]!, out[i * 3 + 2]!));
+    }
+    // Exactly the two materials (green + brown) survive quantization; the
+    // yellow-shifted highlights, warm tints AND the stray spots are gone.
+    expect(hues).toEqual(new Set([36, 40]));
+  });
+
+  it('repaints voxels with the exact swatch color (preview = build)', () => {
+    const grid = mountainGrid();
+    const out = quantizeGridColors(grid)!;
+    // Green voxels carry green swatch #2a5e30 bytes, not the input 60,120,60.
+    expect([out[0]!, out[1]!, out[2]!]).toEqual([0x2a, 0x5e, 0x30]);
+    expect([out[143 * 3]!, out[143 * 3 + 1]!, out[143 * 3 + 2]!]).toEqual([0x30, 0x23, 0x18]);
+  });
+
+  it('a distinct accent material survives (blue body + yellow trim)', () => {
+    // Two far-apart hues at 75/25 — the trim dominates its own hue
+    // neighborhood, clears the floor, and fits inside the entry budget.
+    const nx = 12, nz = 12;
+    const cells = new Uint8Array(nx * nz).fill(1);
+    const c = new Uint8Array(nx * nz * 3);
+    for (let i = 0; i < nx * nz; i++) {
+      const trim = i % 12 >= 9; // right column third
+      c[i * 3] = trim ? 250 : 40;
+      c[i * 3 + 1] = trim ? 230 : 60;
+      c[i * 3 + 2] = trim ? 90 : 160;
+    }
+    const grid = { nx, ny: 1, nz, cells, filledCount: nx * nz, yAspect: 1, colors: c };
+    const out = quantizeGridColors(grid)!;
+    const hues = new Set<number>();
+    for (let i = 0; i < nx * nz; i++) {
+      hues.add(nearestColorId(out[i * 3]!, out[i * 3 + 1]!, out[i * 3 + 2]!));
+    }
+    expect(hues).toEqual(new Set([38, 35])); // blue body + yellow trim
+  });
+
+  it('uncolored grids and sentinel cells pass through', () => {
+    const plain = gridOf([['##']]);
+    expect(quantizeGridColors(plain)).toBeNull(); // no colors channel
   });
 });
 
