@@ -18,9 +18,10 @@ the one real placement, exactly like placing a Schematica ghost.
 Colored models (OBJ vertex colors or MTL materials **including `map_Kd`
 textures**, glTF/GLB vertex colors, material base colors **or base color
 textures**, colored binary STL) are mapped
-per-block onto the game's palette — textured models are sampled per
-triangle at the UV centroid, so a skin/texture atlas comes through in
-blocks. The builds use the game's full shape
+per-block onto the game's palette — textures are sampled **per block**
+(each voxel looks up its own texel through the triangle's UV mapping), so
+a skin or texture atlas genuinely paints the build instead of flattening
+to one color per triangle. The builds use the game's full shape
 vocabulary (blocks, half/quarter blocks, slopes) so curved models aren't
 staircases of slabs.
 
@@ -116,7 +117,9 @@ STL/OBJ+MTL/glTF/GLB (positions + per-triangle colors) → TriangleMesh
 → transform (rotate/scale) → voxelize
   (SAT triangle-box surface pass + 6-connected exterior flood fill,
    anisotropic grid: 4 y-cells per block so builds aren't flattened;
-   colors ride along — interior cells BFS-inherit the nearest surface color)
+   colors ride along — textured triangles are re-sampled PER VOXEL via
+   barycentric UVs at each cell center; interior cells BFS-inherit the
+   nearest surface color)
 → shape fitting: Block / HalfBlock / QuarterBlock / slope per voxel column
   (each part gets the nearest game palette color, HSV hue-weighted)
 → INSERT: stage a session (no track writes) + draw a ghost mesh in the

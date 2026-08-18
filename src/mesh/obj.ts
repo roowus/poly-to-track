@@ -9,13 +9,14 @@
  *
  * MTL: pass the sidecar's parsed materials (see parseMtl) and `usemtl`
  * colors the faces that follow it. A material with a decoded `map_Kd`
- * texture is sampled at each triangle's UV centroid; otherwise its flat
- * `Kd` diffuse is used. Vertex colors win over the material where both
- * exist. `mtllib` names are surfaced on the result so the panel can tell
- * the user which file to add; ditto each material's texture filename so
- * the panel can decode it from the same selection.
+ * texture contributes a per-triangle UV + texture channel (`texturing`) that
+ * the voxelizer samples PER VOXEL, plus a UV-centroid fallback color;
+ * otherwise its flat `Kd` diffuse is used. Vertex colors win over the
+ * material where both exist. `mtllib` names are surfaced on the result so
+ * the panel can tell the user which file to add; ditto each material's
+ * texture filename so the panel can decode it from the same selection.
  */
-import type { TriangleMesh } from './types';
+import type { MeshTexturing, TriangleMesh } from './types';
 import { sampleImage, type DecodedImage } from './texture';
 
 export interface MtlMaterial {
@@ -49,6 +50,13 @@ export function parseObj(text: string, materials?: MtlMaterials): ObjMesh {
   let sawMtlColor = false;
   const mtlLibs: string[] = [];
   let activeMtl: MtlMaterial | null = null;
+  // Texture channel: per-triangle image-space UVs + texture index, so the
+  // voxelizer can sample a texel PER VOXEL (the triMtl centroid sample above
+  // is only the flat fallback).
+  const triUvs: number[] = [];
+  const triTexture: number[] = [];
+  const textures: DecodedImage[] = [];
+  const textureIndex = new Map<DecodedImage, number>();
 
   const resolve = (token: string): { v: number; vt: number } => {
     const parts = token.split('/');
@@ -96,6 +104,7 @@ export function parseObj(text: string, materials?: MtlMaterials): ObjMesh {
         const tri = [first, resolve(t[i]!), resolve(t[i + 1]!)];
         let cr = 0, cg = 0, cb = 0, colored = 0;
         let cu = 0, cv = 0, uvCount = 0;
+        const uvFlat: number[] = [];
         for (const { v: idx, vt } of tri) {
           coords.push(vertices[idx * 3]!, vertices[idx * 3 + 1]!, vertices[idx * 3 + 2]!);
           if (vertexColors[idx * 3]! >= 0) {
@@ -105,16 +114,21 @@ export function parseObj(text: string, materials?: MtlMaterials): ObjMesh {
             colored++;
           }
           if (vt >= 0) {
-            cu += texcoords[vt * 2]!;
-            cv += texcoords[vt * 2 + 1]!;
+            const u = texcoords[vt * 2]!, v = texcoords[vt * 2 + 1]!;
+            cu += u;
+            cv += v;
             uvCount++;
+            // OBJ v is bottom-up, image rows are top-down — flip here so the
+            // stored UVs are image-space (matches glTF and sampleImage).
+            uvFlat.push(u, 1 - v);
           }
         }
         // Triangle color = average of its colored vertices (raw scale for now).
         triColors.push(colored ? cr / colored : -1, colored ? cg / colored : -1, colored ? cb / colored : -1);
+        const textured = !!activeMtl?.image && uvCount === 3;
         if (activeMtl) {
           if (activeMtl.image && uvCount === 3) {
-            // OBJ v is bottom-up, image rows are top-down.
+            // Centroid fallback color (also shown before voxelization).
             const [r, g, b] = sampleImage(activeMtl.image, cu / 3, 1 - cv / 3);
             triMtl.push(r, g, b);
           } else {
@@ -123,6 +137,22 @@ export function parseObj(text: string, materials?: MtlMaterials): ObjMesh {
           sawMtlColor = true;
         } else {
           triMtl.push(-1, -1, -1);
+        }
+        // Texture channel — vertex colors keep precedence, so a triangle with
+        // its own colors stays untextured here.
+        if (textured && colored === 0) {
+          const img = activeMtl!.image!;
+          let ti = textureIndex.get(img);
+          if (ti === undefined) {
+            ti = textures.length;
+            textures.push(img);
+            textureIndex.set(img, ti);
+          }
+          triTexture.push(ti);
+          triUvs.push(...uvFlat);
+        } else {
+          triTexture.push(-1);
+          triUvs.push(0, 0, 0, 0, 0, 0);
         }
       }
     } else if (s.startsWith('mtllib ')) {
@@ -157,7 +187,21 @@ export function parseObj(text: string, materials?: MtlMaterials): ObjMesh {
       }
     }
   }
-  return { positions: new Float32Array(coords), triangleCount, mtlLibs, ...(colors ? { colors } : {}) };
+  let texturing: MeshTexturing | undefined;
+  if (textures.length > 0) {
+    texturing = {
+      uvs: new Float32Array(triUvs),
+      triTexture: new Int32Array(triTexture),
+      textures,
+    };
+  }
+  return {
+    positions: new Float32Array(coords),
+    triangleCount,
+    mtlLibs,
+    ...(colors ? { colors } : {}),
+    ...(texturing ? { texturing } : {}),
+  };
 }
 
 /**

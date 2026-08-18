@@ -8,6 +8,7 @@
  */
 import type { TriangleMesh } from '../mesh/types';
 import { meshBounds } from '../mesh/types';
+import { sampleImage, srgbToLinear, linearToSrgbByte } from '../mesh/texture';
 
 export interface VoxelizeOptions {
   /** Longest model axis maps to this many voxels (in x/z cell units). */
@@ -46,6 +47,7 @@ export function voxelize(mesh: TriangleMesh, opts: VoxelizeOptions): VoxelGrid {
   const longest = Math.max(size[0]!, size[1]!, size[2]!);
   if (!(longest > 0)) return { nx: 1, ny: 1, nz: 1, cells: new Uint8Array([1]), filledCount: 1, yAspect };
   const meshColors = mesh.colors ?? null;
+  const texturing = mesh.texturing ?? null;
 
   // Anisotropic cells (x/z cells are `cell` wide, y cells are `cell/ySub`
   // tall) are implemented by stretching the mesh's y axis by ySub and
@@ -55,7 +57,7 @@ export function voxelize(mesh: TriangleMesh, opts: VoxelizeOptions): VoxelGrid {
   const ny = Math.max(1, Math.ceil((size[1]! * ySub) / cell - 1e-9));
   const nz = Math.max(1, Math.ceil(size[2]! / cell - 1e-9));
   const cells = new Uint8Array(nx * ny * nz);
-  const colors = meshColors ? new Uint8Array(nx * ny * nz * 3) : null;
+  const colors = meshColors || texturing ? new Uint8Array(nx * ny * nz * 3) : null;
 
   // Epsilon-padded: model faces often lie EXACTLY on cell-boundary planes
   // (any axis-aligned geometry does), where float error can flip the SAT's
@@ -94,11 +96,14 @@ export function voxelize(mesh: TriangleMesh, opts: VoxelizeOptions): VoxelGrid {
             // First triangle to claim the cell colors it (cells[idx] guard
             // above means later triangles never repaint). (0,0,0) is the
             // "uncolored" sentinel for interior fill — bump black to (1,1,1).
-            if (colors && meshColors) {
-              const r = meshColors[t * 3]!, g = meshColors[t * 3 + 1]!, b = meshColors[t * 3 + 2]!;
-              colors[idx * 3] = r || g || b ? r : 1;
-              colors[idx * 3 + 1] = r || g || b ? g : 1;
-              colors[idx * 3 + 2] = r || g || b ? b : 1;
+            if (colors) {
+              const c = cellColor(texturing, meshColors, t, cx, cy, cz, v0, v1, v2);
+              if (c) {
+                const [r, g, b] = c;
+                colors[idx * 3] = r || g || b ? r : 1;
+                colors[idx * 3 + 1] = r || g || b ? g : 1;
+                colors[idx * 3 + 2] = r || g || b ? b : 1;
+              }
             }
           }
         }
@@ -114,6 +119,67 @@ export function voxelize(mesh: TriangleMesh, opts: VoxelizeOptions): VoxelGrid {
   let filledCount = 0;
   for (let i = 0; i < cells.length; i++) if (cells[i]) filledCount++;
   return { nx, ny, nz, cells, filledCount, yAspect, ...(colors ? { colors } : {}) };
+}
+
+/**
+ * Color for the cell the triangle just claimed. Textured triangles sample
+ * their texture AT THIS CELL — the cell center is projected onto the
+ * triangle's plane, converted to (clamped) barycentric coordinates, and the
+ * interpolated UV picks the texel. This is what makes a texture read
+ * per-block instead of one flat color per triangle: a face-sized triangle
+ * spans many cells and each gets its own texel. Untextured triangles fall
+ * back to the per-triangle color.
+ */
+function cellColor(
+  texturing: TriangleMesh['texturing'] | null,
+  meshColors: Uint8Array | null,
+  t: number,
+  cx: number, cy: number, cz: number,
+  a: number[], b: number[], c: number[],
+): [number, number, number] | null {
+  const texIdx = texturing?.triTexture[t] ?? -1;
+  if (texturing && texIdx >= 0) {
+    const img = texturing.textures[texIdx];
+    if (img) {
+      // Barycentric coords of the cell center w.r.t. the (stretched) triangle
+      // via the standard dot-product solve; degenerate triangles fall through.
+      const e1x = b[0]! - a[0]!, e1y = b[1]! - a[1]!, e1z = b[2]! - a[2]!;
+      const e2x = c[0]! - a[0]!, e2y = c[1]! - a[1]!, e2z = c[2]! - a[2]!;
+      const px = cx - a[0]!, py = cy - a[1]!, pz = cz - a[2]!;
+      const d11 = e1x * e1x + e1y * e1y + e1z * e1z;
+      const d12 = e1x * e2x + e1y * e2y + e1z * e2z;
+      const d22 = e2x * e2x + e2y * e2y + e2z * e2z;
+      const dp1 = px * e1x + py * e1y + pz * e1z;
+      const dp2 = px * e2x + py * e2y + pz * e2z;
+      const den = d11 * d22 - d12 * d12;
+      if (den > 1e-12) {
+        const u = (d22 * dp1 - d12 * dp2) / den;
+        const v = (d11 * dp2 - d12 * dp1) / den;
+        // SAT counts edge-touching, so the cell center may sit slightly
+        // OUTSIDE the claiming triangle (e.g. just across a quad's diagonal).
+        // The position→UV map is affine over the whole plane, so extrapolated
+        // barycentrics give the exact texel there — clamping instead would
+        // drag the sample toward the wrong corner (bounded: SAT guarantees
+        // the center is within half a cell of the triangle).
+        const uvs = texturing.uvs;
+        const su = uvs[t * 6]! * (1 - u - v) + uvs[t * 6 + 2]! * u + uvs[t * 6 + 4]! * v;
+        const sv = uvs[t * 6 + 1]! * (1 - u - v) + uvs[t * 6 + 3]! * u + uvs[t * 6 + 5]! * v;
+        const [tr, tg, tb] = sampleImage(img, su, sv);
+        const tint = texturing.tints;
+        if (tint) {
+          // Texture bytes are sRGB, the tint is linear — multiply linearly.
+          return [
+            linearToSrgbByte(srgbToLinear(tr) * tint[t * 3]!),
+            linearToSrgbByte(srgbToLinear(tg) * tint[t * 3 + 1]!),
+            linearToSrgbByte(srgbToLinear(tb) * tint[t * 3 + 2]!),
+          ];
+        }
+        return [tr, tg, tb];
+      }
+    }
+  }
+  if (meshColors) return [meshColors[t * 3]!, meshColors[t * 3 + 1]!, meshColors[t * 3 + 2]!];
+  return null;
 }
 
 /**

@@ -252,6 +252,25 @@ describe('glTF textures', () => {
     expect([...mesh.colors!]).toEqual([255, 0, 0]); // glTF v=0.2 = top row
   });
 
+  it('emits the per-voxel texture channel (UVs + texture + tint)', () => {
+    const { doc, bin } = triangleDoc({
+      uv: UV_TOP_LEFT, textureUri: 'tex.png', baseColorFactor: [0.5, 1, 1, 1],
+    });
+    const mesh = parseGlb(toGlb(doc, bin), undefined, [IMG]);
+    expect(mesh.texturing).toBeDefined();
+    expect(mesh.texturing!.textures).toEqual([IMG]);
+    expect([...mesh.texturing!.triTexture]).toEqual([0]);
+    // Float32Array round-trip — compare with tolerance.
+    const uvFlat = UV_TOP_LEFT.flat();
+    [...mesh.texturing!.uvs].forEach((u, i) => expect(u).toBeCloseTo(uvFlat[i]!, 5));
+    expect([...mesh.texturing!.tints!]).toEqual([0.5, 1, 1]);
+  });
+
+  it('no texture channel without a decoded image', () => {
+    const { doc, bin } = triangleDoc({ uv: UV_TOP_LEFT, textureUri: 'tex.png' });
+    expect(parseGlb(toGlb(doc, bin), undefined, [null]).texturing).toBeUndefined();
+  });
+
   it('multiplies the texture by baseColorFactor in linear space', () => {
     const { doc, bin } = triangleDoc({
       uv: [[0.6, 0.6], [0.9, 0.7], [0.7, 0.9]], // centroid in the white texel

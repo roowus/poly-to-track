@@ -180,6 +180,94 @@ describe('model colors', () => {
   });
 });
 
+describe('per-voxel texture sampling', () => {
+  // 4×1 stripe texture: red | green | blue | white.
+  const STRIPES = {
+    width: 4,
+    height: 1,
+    data: new Uint8Array([
+      255, 0, 0, 255,  0, 255, 0, 255,  0, 0, 255, 255,  255, 255, 255, 255,
+    ]),
+  };
+  /** Flat 4×4 quad in the xz-plane, u = x/4 across the stripe texture. */
+  const QUAD_OBJ = [
+    'usemtl tex',
+    'v 0 0 0', 'v 4 0 0', 'v 4 0 4', 'v 0 0 4',
+    'vt 0 0', 'vt 1 0', 'vt 1 1', 'vt 0 1',
+    'f 1/1 2/2 3/3 4/4',
+  ].join('\n');
+  const texturedQuad = () => {
+    const mats = new Map([['tex', { kd: [0, 0, 0] as const, mapKd: 's.png', image: STRIPES }]]);
+    return parseObj(QUAD_OBJ, mats);
+  };
+
+  it('parseObj emits the texture channel for map_Kd triangles', () => {
+    const mesh = texturedQuad();
+    expect(mesh.texturing).toBeDefined();
+    expect(mesh.texturing!.textures).toHaveLength(1);
+    expect([...mesh.texturing!.triTexture]).toEqual([0, 0]);
+    // 2 triangles × 3 vertices × (u,v)
+    expect(mesh.texturing!.uvs).toHaveLength(12);
+  });
+
+  it('each voxel samples its own texel — one triangle spans many colors', () => {
+    const mesh = texturedQuad();
+    const grid = voxelize(mesh, { resolution: 4, solid: false, ySubdivisions: 1 });
+    expect(grid.nx).toBe(4);
+    expect(grid.nz).toBe(4);
+    // Column x samples texel x: red, green, blue, white — for EVERY z row,
+    // even though each triangle only covers half the quad.
+    const expected = [
+      [255, 0, 0], [0, 255, 0], [0, 0, 255], [255, 255, 255],
+    ];
+    for (let z = 0; z < 4; z++) {
+      for (let x = 0; x < 4; x++) {
+        const i = x + z * grid.nx * grid.ny;
+        expect(grid.cells[i]).toBe(1);
+        expect([
+          grid.colors![i * 3], grid.colors![i * 3 + 1], grid.colors![i * 3 + 2],
+        ]).toEqual(expected[x]);
+      }
+    }
+  });
+
+  it('the whole build no longer collapses to two flat triangle colors', () => {
+    const mesh = texturedQuad();
+    const grid = voxelize(mesh, { resolution: 4, solid: false, ySubdivisions: 1 });
+    const parts = buildParts(grid, { color: COLOR.Default, withPad: false, shaped: false });
+    expect(new Set(parts.map((p) => p.color)).size).toBeGreaterThanOrEqual(3);
+  });
+
+  it('linear tints multiply the sampled texel (voxelize path)', () => {
+    const mesh = texturedQuad();
+    const texturing = mesh.texturing!;
+    const tinted = {
+      ...mesh,
+      texturing: {
+        ...texturing,
+        // Kill green+blue: the white column must come out red.
+        tints: new Float32Array(Array.from({ length: mesh.triangleCount }, () => [1, 0, 0]).flat()),
+      },
+    };
+    const grid = voxelize(tinted, { resolution: 4, solid: false, ySubdivisions: 1 });
+    const i = 3; // x=3, z=0 — the white texel's column
+    expect([grid.colors![i * 3], grid.colors![i * 3 + 1], grid.colors![i * 3 + 2]]).toEqual([255, 0, 0]);
+  });
+
+  it('vertex-colored triangles stay untextured (vertex colors win)', () => {
+    const mats = new Map([['tex', { kd: [0, 0, 0] as const, mapKd: 's.png', image: STRIPES }]]);
+    const obj = [
+      'usemtl tex',
+      'v 0 0 0 1 0 1', 'v 4 0 0 1 0 1', 'v 4 0 4 1 0 1',
+      'vt 0 0', 'vt 1 0', 'vt 1 1',
+      'f 1/1 2/2 3/3',
+    ].join('\n');
+    const mesh = parseObj(obj, mats);
+    expect(mesh.texturing).toBeUndefined();
+    expect([...mesh.colors!]).toEqual([255, 0, 255]);
+  });
+});
+
 describe('fitShapes', () => {
   it('turns convex plan corners into HalfBlocks and keeps straight edges as Blocks', () => {
     // One 3×3 solid layer: 4 corners → HalfBlock, 4 edges + center → Block.

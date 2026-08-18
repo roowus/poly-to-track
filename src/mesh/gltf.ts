@@ -6,11 +6,12 @@
  * mod's triangle soup.
  *
  * Colors: a primitive's COLOR_0 vertex attribute wins (averaged per
- * triangle); otherwise baseColorTexture sampled at each triangle's UV
- * centroid × baseColorFactor; otherwise the flat baseColorFactor. Factors
- * and COLOR_0 are LINEAR per the glTF spec, so everything is encoded to
- * sRGB before byte-packing — the palette matcher and preview expect
- * display-space RGB.
+ * triangle); otherwise baseColorTexture — emitted as a per-triangle UV +
+ * texture channel (`texturing`, sampled PER VOXEL by the voxelizer, tinted
+ * by baseColorFactor) with a UV-centroid fallback color; otherwise the flat
+ * baseColorFactor. Factors and COLOR_0 are LINEAR per the glTF spec, so
+ * everything is encoded to sRGB before byte-packing — the palette matcher
+ * and preview expect display-space RGB.
  *
  * Buffers: GLB's BIN chunk backs buffer 0; `data:` URIs are decoded inline;
  * anything else goes through the optional `resolveBuffer` callback (the
@@ -20,7 +21,7 @@
  * panel — call gltfImageBytes() to get each image's raw bytes, decode them,
  * and pass the pixels back via the `images` array (indexed like doc.images).
  */
-import type { TriangleMesh } from './types';
+import type { MeshTexturing, TriangleMesh } from './types';
 import { sampleImage, srgbToLinear, linearToSrgbByte, type DecodedImage } from './texture';
 
 export type BufferResolver = (uri: string) => ArrayBuffer | null;
@@ -82,6 +83,14 @@ export function parseGltf(
   const coords: number[] = [];
   const triColors: number[] = []; // r,g,b bytes per triangle, -1 = uncolored
   let sawColor = false;
+  // Texture channel for per-voxel sampling (triColors keeps the centroid
+  // fallback). UVs in glTF are already image-space (v top-down).
+  const triUvs: number[] = [];
+  const triTexture: number[] = [];
+  const triTints: number[] = [];
+  let sawTint = false;
+  const outTextures: DecodedImage[] = [];
+  const textureIndexOf = new Map<DecodedImage, number>();
 
   const readAccessor = (index: number): Float32Array => {
     const acc = doc.accessors?.[index];
@@ -164,10 +173,23 @@ export function parseGltf(
       }
     }
 
+    // Register the primitive's texture once, not per triangle.
+    let texSlot = -1;
+    if (texImage && uvs) {
+      let ti = textureIndexOf.get(texImage);
+      if (ti === undefined) {
+        ti = outTextures.length;
+        outTextures.push(texImage);
+        textureIndexOf.set(texImage, ti);
+      }
+      texSlot = ti;
+    }
+
     const triCount = Math.floor(indices.length / 3);
     for (let t = 0; t < triCount; t++) {
       let cr = 0, cg = 0, cb = 0;
       let cu = 0, cv = 0;
+      const uvFlat: number[] = [];
       for (let k = 0; k < 3; k++) {
         const vi = indices[t * 3 + k]!;
         let x = pos[vi * 3]!, y = pos[vi * 3 + 1]!, z = pos[vi * 3 + 2]!;
@@ -185,15 +207,21 @@ export function parseGltf(
           cb += vcolors[vi * vcomps + 2]!;
         }
         if (uvs) {
-          cu += uvs[vi * 2]!;
-          cv += uvs[vi * 2 + 1]!;
+          const u = uvs[vi * 2]!, v = uvs[vi * 2 + 1]!;
+          cu += u;
+          cv += v;
+          uvFlat.push(u, v);
         }
       }
       if (vcolors) {
         triColors.push(srgbByte(cr / 3), srgbByte(cg / 3), srgbByte(cb / 3));
         sawColor = true;
+        triTexture.push(-1);
+        triUvs.push(0, 0, 0, 0, 0, 0);
+        triTints.push(1, 1, 1);
       } else if (texImage && uvs) {
-        // Texel at the UV centroid; texture bytes are sRGB, factors linear —
+        // Centroid fallback color; the voxelizer resamples per voxel via the
+        // texture channel below. Texture bytes are sRGB, factors linear —
         // multiply in linear space, then back to display bytes.
         const [tr, tg, tb] = sampleImage(texImage, cu / 3, cv / 3);
         triColors.push(
@@ -202,11 +230,20 @@ export function parseGltf(
           linearToSrgbByte(srgbToLinear(tb) * bcf[2]!),
         );
         sawColor = true;
-      } else if (flat) {
-        triColors.push(flat[0], flat[1], flat[2]);
-        sawColor = true;
+        triTexture.push(texSlot);
+        triUvs.push(...uvFlat);
+        triTints.push(bcf[0]!, bcf[1]!, bcf[2]!);
+        if (bcf[0] !== 1 || bcf[1] !== 1 || bcf[2] !== 1) sawTint = true;
       } else {
-        triColors.push(-1, -1, -1);
+        if (flat) {
+          triColors.push(flat[0], flat[1], flat[2]);
+          sawColor = true;
+        } else {
+          triColors.push(-1, -1, -1);
+        }
+        triTexture.push(-1);
+        triUvs.push(0, 0, 0, 0, 0, 0);
+        triTints.push(1, 1, 1);
       }
     }
   };
@@ -250,7 +287,21 @@ export function parseGltf(
       }
     }
   }
-  return { positions: new Float32Array(coords), triangleCount, ...(colors ? { colors } : {}) };
+  let texturing: MeshTexturing | undefined;
+  if (outTextures.length > 0) {
+    texturing = {
+      uvs: new Float32Array(triUvs),
+      triTexture: new Int32Array(triTexture),
+      textures: outTextures,
+      ...(sawTint ? { tints: new Float32Array(triTints) } : {}),
+    };
+  }
+  return {
+    positions: new Float32Array(coords),
+    triangleCount,
+    ...(colors ? { colors } : {}),
+    ...(texturing ? { texturing } : {}),
+  };
 }
 
 /**
