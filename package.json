@@ -1,6 +1,6 @@
 {
   "name": "poly-to-track",
-  "version": "0.7.3",
+  "version": "0.7.4",
   "private": true,
   "type": "module",
   "description": "Poly To Track — a TSPML mod that imports 3D files (STL/OBJ) and builds them as PolyTrack block builds: insert into the open editor with move/rotate controls, or save as a track. Schematica-style.",

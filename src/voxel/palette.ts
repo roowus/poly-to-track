@@ -15,7 +15,7 @@
  * voxel with its surviving entry's exact swatch color — preview, ghost and
  * placed parts all agree, and the build uses only in-palette colors.
  */
-import { COLOR_SWATCHES, nearestColorId } from '../codec/parts';
+import { COLOR, COLOR_SWATCHES, nearestColorId } from '../codec/parts';
 import type { VoxelGrid } from './voxelize';
 
 /**
@@ -69,6 +69,37 @@ export function quantizeGridColors(grid: VoxelGrid): Uint8Array | null {
     total++;
   }
   if (total === 0 || votes.size <= 1) return colors;
+
+  // PALE/DARK SPLITS inside one entry. Skin (~hue 20°) and brown clothes
+  // (~hue 26°) vote for the SAME dark swatch — the hue palette can't tell
+  // them apart, so the whole character used to repaint as one brown. But
+  // their VALUES differ hugely. When one entry's votes are bimodal in value
+  // (a light cluster and a dark cluster, both substantial), split it: the
+  // DARK cluster keeps the swatch color, the LIGHT cluster becomes the light
+  // gray swatch — skin reads as skin-light against brown clothes instead of
+  // everything collapsing into "brown".
+  for (const [id] of votes) {
+    if (id === COLOR.Default || id === COLOR.Custom0) continue; // grays are value-true already
+    const lightDark = { light: 0, dark: 0 };
+    for (let i = 0; i < ids.length; i++) {
+      if (ids[i] !== id) continue;
+      const ci = i * 3;
+      const max = Math.max(colors[ci]!, colors[ci + 1]!, colors[ci + 2]!);
+      if (max > 180) lightDark.light++;
+      else lightDark.dark++;
+    }
+    const n = lightDark.light + lightDark.dark;
+    if (lightDark.light / n >= 0.15 && lightDark.dark / n >= 0.15) {
+      for (let i = 0; i < ids.length; i++) {
+        if (ids[i] !== id) continue;
+        const ci = i * 3;
+        const max = Math.max(colors[ci]!, colors[ci + 1]!, colors[ci + 2]!);
+        if (max > 180) ids[i] = COLOR.Default; // light cluster → light gray
+      }
+      votes.set(COLOR.Default, (votes.get(COLOR.Default) ?? 0) + lightDark.light);
+      votes.set(id, (votes.get(id) ?? 0) - lightDark.light);
+    }
+  }
 
   // Keep the top coverage masses: rank entries by votes, keep the first
   // MAX_SURVIVING_ENTRIES, and also drop any entry under MIN_COVERAGE (a

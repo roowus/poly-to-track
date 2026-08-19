@@ -358,6 +358,32 @@ describe('dominant-color quantization', () => {
     expect(hues).toEqual(new Set([38, 35])); // blue body + yellow trim
   });
 
+  it('a pale character does not collapse into all-brown (value split)', () => {
+    // Skin (224,172,150 — pale, hue ~20°) and a brown jacket (110,75,45,
+    // hue ~26°) both vote for the dark orange swatch. Their VALUES are
+    // bimodal, so the entry splits: dark half keeps the swatch (jacket),
+    // light half becomes light gray (skin) — the character keeps 3 readable
+    // materials instead of one brown mass.
+    const nx = 20, nz = 10;
+    const cells = new Uint8Array(nx * nz).fill(1);
+    const c = new Uint8Array(nx * nz * 3);
+    for (let i = 0; i < nx * nz; i++) {
+      const skin = i < 120, jeans = i >= 180;
+      c[i * 3] = jeans ? 50 : skin ? 224 : 110;
+      c[i * 3 + 1] = jeans ? 70 : skin ? 172 : 75;
+      c[i * 3 + 2] = jeans ? 140 : skin ? 150 : 45;
+    }
+    const grid = { nx, ny: 1, nz, cells, filledCount: nx * nz, yAspect: 1, colors: c };
+    const out = quantizeGridColors(grid)!;
+    const hues = new Set<number>();
+    for (let i = 0; i < nx * nz; i++) {
+      hues.add(nearestColorId(out[i * 3]!, out[i * 3 + 1]!, out[i * 3 + 2]!));
+    }
+    expect(hues).toEqual(new Set([0, 34, 38])); // light-gray skin + orange jacket + blue jeans
+    // The skin voxels specifically carry the light gray swatch bytes.
+    expect([out[0]!, out[1]!, out[2]!]).toEqual([0xb8, 0xb8, 0xb8]);
+  });
+
   it('uncolored grids and sentinel cells pass through', () => {
     const plain = gridOf([['##']]);
     expect(quantizeGridColors(plain)).toBeNull(); // no colors channel
