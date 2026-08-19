@@ -273,8 +273,12 @@ export function createVoxelPreview(width: number, height: number, doc: Document 
     b.type = 'button';
     b.textContent = label;
     b.title = label === '+' ? 'Zoom in' : label === '−' ? 'Zoom out' : 'Reset zoom';
-    b.style.cssText = 'width:24px;height:24px;padding:0;font-size:15px;line-height:1;'
-      + 'border:1px solid rgba(255,255,255,.35);border-radius:4px;background:rgba(20,26,54,.75);color:#fff;cursor:pointer';
+    // Squared-off and riding the game's own button variables so the overlay
+    // matches the rest of the panel instead of reading as a web widget.
+    b.style.cssText = 'width:26px;height:26px;padding:0;font-size:16px;font-style:normal;line-height:1;'
+      + 'display:grid;place-content:center;border:none;cursor:pointer;'
+      + 'background-color:var(--button-color,#112052);color:var(--text-color,#fff);'
+      + 'clip-path:polygon(0 0, 100% 0, calc(100% - 5px) 100%, 0 100%)';
     b.addEventListener('click', fn);
     zoomBox.appendChild(b);
     return b;

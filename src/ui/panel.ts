@@ -77,6 +77,9 @@ const RES_SLIDER_MAX = 256;
 const MIN_SCALE = 0.1;
 const SLIDER_SCALE_MAX = 8;
 const MAX_SCALE = 16;
+/** Usable width inside the panel: 360px panel − 16px padding either side.
+ *  The preview canvas has a pixel width, so it has to match or it overflows. */
+const PANEL_BODY_WIDTH = 328;
 
 interface Settings {
   resolution: number;
@@ -145,12 +148,15 @@ const PANEL_CSS = `
   pointer-events: auto;
   z-index: 5;
 }
+/* Padded + bordered controls in a fixed-width panel overflow without this —
+ * the text input and the preview canvas both used to poke out of the body. */
+#${PANEL_ID}, #${PANEL_ID} * { box-sizing: border-box; }
 #${PANEL_ID} .ptt-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
   padding: 8px 10px;
-  font-size: 26px;
+  font-size: 24px;
   background-color: var(--surface-color, #28346a);
   clip-path: polygon(0 0, 100% 0, calc(100% - 12px) 100%, 0 100%);
 }
@@ -158,7 +164,7 @@ const PANEL_CSS = `
   padding: 14px 16px 16px;
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: 10px;
   overflow-y: auto;
   min-height: 0;
   scrollbar-width: thin;
@@ -166,7 +172,7 @@ const PANEL_CSS = `
 #${PANEL_ID} button.ptt-btn, #${TOOLBAR_ID} button.ptt-btn {
   margin: 0;
   padding: 6px 14px;
-  font-size: 22px;
+  font-size: 20px;
   font-style: italic;
   color: var(--text-color, #fff);
   background-color: var(--button-color, #112052);
@@ -182,19 +188,66 @@ const PANEL_CSS = `
   cursor: default;
 }
 #${PANEL_ID} button.ptt-btn.primary, #${TOOLBAR_ID} button.ptt-btn.primary { background-color: var(--surface-color, #28346a); font-weight: bold; }
+/* The one action the whole panel builds toward — give it a rule above and a
+ * taller hit area so it doesn't read as just another section head. */
+#${PANEL_ID} button.ptt-insert {
+  margin-top: 2px;
+  padding-top: 9px;
+  padding-bottom: 9px;
+  border-top: 2px solid var(--button-color, #112052);
+}
 #${PANEL_ID} button.ptt-btn.primary:hover, #${TOOLBAR_ID} button.ptt-btn.primary:hover { background-color: var(--button-hover-color, #334b77); }
 #${PANEL_ID} .ptt-title {
-  font-size: 16px;
+  font-size: 15px;
   text-transform: uppercase;
   letter-spacing: 0.06em;
-  opacity: 0.75;
-  margin-top: 6px;
+  opacity: 0.7;
 }
-#${PANEL_ID} .ptt-note { font-size: 17px; opacity: 0.75; min-height: 18px; }
-#${PANEL_ID} .ptt-status { font-size: 18px; min-height: 19px; }
+/* A sub-heading that follows other controls needs a bigger gap above than
+ * below — otherwise it floats equidistant and reads as unattached. */
+#${PANEL_ID} .ptt-title:not(:first-child) { margin-top: 4px; }
+#${PANEL_ID} .ptt-note { font-size: 16px; opacity: 0.75; line-height: 1.3; }
+#${PANEL_ID} .ptt-status { font-size: 17px; line-height: 1.3; }
+/* An empty note/status must take NO space: with a min-height they left blank
+ * bands floating around the Insert button, which is most of what read as
+ * "janky" — the panel looked like it had holes in it. :empty also drops the
+ * flex column gap on either side. */
+#${PANEL_ID} .ptt-note:empty, #${PANEL_ID} .ptt-status:empty { display: none; }
 #${PANEL_ID} .ptt-row { display: flex; gap: 8px; flex-wrap: wrap; }
 #${PANEL_ID} .ptt-row > .ptt-btn { flex: 1; text-align: center; }
-#${PANEL_ID} .ptt-slider-top { display: flex; justify-content: space-between; align-items: center; font-size: 18px; }
+#${PANEL_ID} .ptt-slider-top { display: flex; justify-content: space-between; align-items: center; gap: 8px; font-size: 17px; }
+/* ---- collapsible sections ----
+ * The head is a real button (game styling) whose caret ROTATES: ▸ closed →
+ * ▾ open, i.e. sideways-to-down, which is the affordance every OS file tree
+ * uses. The caret is a separate span so the rotation can't reflow the label. */
+#${PANEL_ID} button.ptt-dd-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  text-align: left;
+  background-color: var(--surface-color, #28346a);
+}
+#${PANEL_ID} .ptt-dd-caret {
+  flex: none;
+  font-size: 14px;
+  font-style: normal;
+  line-height: 1;
+  transition: transform 120ms ease-out;
+}
+#${PANEL_ID} button.ptt-dd-head[aria-expanded="true"] .ptt-dd-caret { transform: rotate(90deg); }
+#${PANEL_ID} .ptt-dd-body {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 10px 0 6px 10px;
+  border-left: 2px solid var(--button-color, #112052);
+  margin-left: 2px;
+  /* Cancel the body's 10px column gap above the panel: an open section should
+   * read as head-plus-contents, not as two unrelated stacked blocks. */
+  margin-top: -10px;
+}
+#${PANEL_ID} .ptt-dd-body[hidden] { display: none; }
 #${PANEL_ID} button.ptt-readout {
   margin: 0;
   padding: 1px 8px;
@@ -251,20 +304,53 @@ const PANEL_CSS = `
   background-color: var(--text-color, #fff);
   clip-path: polygon(0 0, 100% 0, calc(100% - 5px) 100%, 0 100%);
 }
+/* Swatches share one grid so the palette lines up in even columns instead of
+ * the ragged flex-wrap rows they used to form. A FIXED column count (not
+ * auto-fill) keeps the last row aligned with the ones above it — auto-fill
+ * packed 8 then orphaned 2. */
+#${PANEL_ID} .ptt-swatches {
+  display: grid;
+  grid-template-columns: repeat(5, 1fr);
+  gap: 6px;
+}
 #${PANEL_ID} .ptt-swatch {
-  width: 30px; height: 30px;
+  width: 100%; height: 28px;
+  padding: 0;
   border: 2px solid var(--surface-color, #28346a);
   cursor: pointer;
   clip-path: polygon(0 0, 100% 0, calc(100% - 6px) 100%, 0 100%);
 }
 #${PANEL_ID} .ptt-swatch.selected { border-color: var(--text-color, #fff); box-shadow: inset 0 0 5px #fff; }
-#${PANEL_ID} canvas { background: var(--surface-tertiary-color, #192042); }
-#${PANEL_ID} label { font-size: 20px; display: flex; gap: 10px; align-items: center; cursor: pointer; }
+#${PANEL_ID} canvas { display: block; width: 100%; background: var(--surface-tertiary-color, #192042); }
+/* align-items:flex-start (not center) so a label that wraps to two lines keeps
+ * its box beside the FIRST line instead of floating to the middle. */
+#${PANEL_ID} label {
+  font-size: 18px;
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  cursor: pointer;
+  line-height: 1.25;
+}
+/* Optically center the box against the first line of text (20px line box vs
+ * the 20px control) without dragging it down when the text wraps. */
+#${PANEL_ID} label > input[type="checkbox"] { margin-top: 2px; }
+#${PANEL_ID} input[type="text"] {
+  width: 100%;
+  padding: 5px 10px;
+  font: inherit;
+  font-size: 18px;
+  color: var(--text-color, #fff);
+  background-color: var(--surface-tertiary-color, #192042);
+  border: 1px solid var(--button-color, #112052);
+  outline: none;
+}
+#${PANEL_ID} input[type="text"]:focus { border-color: var(--button-hover-color, #334b77); }
 #${PANEL_ID} input[type="checkbox"] {
   appearance: none;
   -webkit-appearance: none;
-  width: 22px;
-  height: 22px;
+  width: 20px;
+  height: 20px;
   margin: 0;
   flex: none;
   cursor: pointer;
@@ -276,8 +362,8 @@ const PANEL_CSS = `
 #${PANEL_ID} input[type="checkbox"]:hover { background-color: var(--button-hover-color, #334b77); }
 #${PANEL_ID} input[type="checkbox"]::before {
   content: "";
-  width: 12px;
-  height: 12px;
+  width: 11px;
+  height: 11px;
   transform: scale(0);
   background-color: var(--text-color, #fff);
   clip-path: polygon(14% 44%, 0 65%, 50% 100%, 100% 16%, 80% 0%, 43% 62%);
@@ -587,8 +673,9 @@ export function createPanel(api: TspmlApi): Panel {
     if (mesh) fileLabel.textContent = `${meshName} — ${mesh.triangleCount.toLocaleString()} triangles`;
     body.append(fileBtn, fileInput, fileLabel);
 
-    // preview
-    preview = createVoxelPreview(336, 210, doc);
+    // preview — PANEL_BODY_WIDTH, not a round number: a wider canvas poked out
+    // past the body's padding (the panel is a fixed 360px).
+    preview = createVoxelPreview(PANEL_BODY_WIDTH, 210, doc);
     body.appendChild(preview.container);
 
     // resolution + solid
@@ -631,8 +718,14 @@ export function createPanel(api: TspmlApi): Panel {
     poseDd.body.appendChild(resetBtn);
     syncPoseSliders();
 
-    // color
-    body.appendChild(sectionTitle(doc, 'Block color'));
+    // ---- Colors: the swatch/model-colors choice AND the mapping thresholds
+    // live in ONE dropdown. They were two separate places for the same
+    // decision ("what color do the blocks come out?"), which is exactly the
+    // sort of split that made the panel feel scattered.
+    const colorDd = dropdown(doc, 'Colors');
+    body.append(colorDd.head, colorDd.body);
+    const settingsBody = colorDd.body;
+
     modelColorsLabel = doc.createElement('label');
     modelColorsCheck = doc.createElement('input');
     modelColorsCheck.type = 'checkbox';
@@ -644,16 +737,15 @@ export function createPanel(api: TspmlApi): Panel {
       rebuildSessionParts();
     });
     modelColorsLabel.append(modelColorsCheck, doc.createTextNode('Use the model’s own colors'));
-    body.appendChild(modelColorsLabel);
+    settingsBody.append(sectionTitle(doc, 'Block color'), modelColorsLabel);
     const swatchRow = doc.createElement('div');
-    swatchRow.className = 'ptt-row';
-    swatchRow.style.flexWrap = 'wrap';
+    swatchRow.className = 'ptt-swatches';
     for (const sw of COLOR_SWATCHES) {
       const b = doc.createElement('button');
+      b.type = 'button';
       b.className = `ptt-swatch${sw.id === settings.color ? ' selected' : ''}`;
       b.title = sw.name;
       b.style.backgroundColor = sw.hex;
-      b.style.flex = 'none';
       b.addEventListener('click', () => {
         settings.color = sw.id;
         saveSettings(settings);
@@ -664,13 +756,9 @@ export function createPanel(api: TspmlApi): Panel {
       });
       swatchRow.appendChild(b);
     }
-    body.appendChild(swatchRow);
+    settingsBody.appendChild(swatchRow);
 
-    // ---- Settings dropdowns (coloring + shapes) ----
-    const colorDd = dropdown(doc, 'Color mapping ▸ settings');
-    body.append(colorDd.head, colorDd.body);
-    const settingsBody = colorDd.body;
-    settingsBody.appendChild(sectionTitle(doc, 'Coloring'));
+    settingsBody.appendChild(sectionTitle(doc, 'Color mapping'));
     const persistSlider = (label: string, min: number, max: number, value: number, step: number, fmt: (v: number) => string, set: (v: number) => void): void => {
       const ctl = slider(doc, label, min, max, value, step, fmt, (v) => {
         set(v);
@@ -706,7 +794,7 @@ export function createPanel(api: TspmlApi): Panel {
     }
 
     // ---- Shapes dropdown ----
-    const shapeDd = dropdown(doc, 'Block types used ▸ settings');
+    const shapeDd = dropdown(doc, 'Block types used');
     body.append(shapeDd.head, shapeDd.body);
     const shapeBody = shapeDd.body;
     const shapeCheck = (label: string, key: 'halfBlocks' | 'quarterBlocks' | 'outerCorners' | 'innerCorners' | 'softEdges'): void => {
@@ -729,29 +817,31 @@ export function createPanel(api: TspmlApi): Panel {
     shapeCheck('Inner corner fillers', 'innerCorners');
     shapeCheck('Soft half-height edges (top surfaces)', 'softEdges');
 
-    // stats + actions
+    // stats + actions — the primary action sits directly under the stats it
+    // acts on, with the secondary save-as-track path collapsed below it.
     stats = doc.createElement('div');
     stats.className = 'ptt-note';
     body.appendChild(stats);
 
     insertBtn = btn(doc, '⤓ Insert into editor', () => insert());
-    insertBtn.classList.add('primary');
+    insertBtn.classList.add('primary', 'ptt-insert');
     insertBtn.disabled = grid === null || grid.filledCount === 0;
     body.appendChild(insertBtn);
 
+    status = doc.createElement('div');
+    status.className = 'ptt-status';
+    body.appendChild(status);
+
     // save-as-track (secondary path — the old flow, still useful for sharing)
-    body.appendChild(sectionTitle(doc, 'Or save as a new track'));
+    const saveDd = dropdown(doc, 'Save as a new track instead');
+    body.append(saveDd.head, saveDd.body);
     nameInput = doc.createElement('input');
     nameInput.type = 'text';
     nameInput.placeholder = 'Track name';
     if (meshName) nameInput.value = meshName;
     saveBtn = btn(doc, 'Save as track', () => void saveAsTrack());
     saveBtn.disabled = grid === null || grid.filledCount === 0;
-    body.append(nameInput, saveBtn);
-
-    status = doc.createElement('div');
-    status.className = 'ptt-status';
-    body.appendChild(status);
+    saveDd.body.append(nameInput, saveBtn);
 
     // Floating Apply/Cancel strip — the actual transforms happen on the 3D
     // handles (drag arrows/frames/tips in the viewport) or the keyboard.
@@ -1152,21 +1242,34 @@ interface SliderCtl {
 
 /**
  * A labeled collapsible section: a full-width button that toggles a body.
- * The ▼/▲ marker makes it read as a dropdown; returns the body element so
- * callers append controls into it.
+ *
+ * The caret points SIDEWAYS when closed and rotates DOWN when open (the file
+ * tree convention) — it's one glyph rotated by CSS, not two different glyphs,
+ * so the label never shifts as it animates. The caret lives in its own span
+ * so `head.textContent` stays the plain title for tests/queries, and the body
+ * uses `hidden` rather than an inline display so the flex column layout in
+ * `.ptt-dd-body` survives being reopened.
  */
 function dropdown(doc: Document, title: string, startOpen = false): { head: HTMLButtonElement; body: HTMLDivElement } {
-  const head = btn(doc, `${title}  ▼`, () => {
-    const open = body.style.display !== 'none';
-    body.style.display = open ? 'none' : '';
-    head.textContent = `${title}  ${open ? '▼' : '▲'}`;
-  });
-  head.style.marginTop = '10px';
-  head.style.width = '100%';
+  const head = doc.createElement('button');
+  head.type = 'button';
+  head.className = 'ptt-btn ptt-dd-head';
+  const caret = doc.createElement('span');
+  caret.className = 'ptt-dd-caret';
+  caret.textContent = '▶';
+  const label = doc.createElement('span');
+  label.textContent = title;
+  head.append(caret, label);
+
   const body = doc.createElement('div');
-  body.style.display = startOpen ? '' : 'none';
-  body.style.paddingTop = '6px';
-  if (startOpen) head.textContent = `${title}  ▲`;
+  body.className = 'ptt-dd-body';
+
+  const setOpen = (open: boolean): void => {
+    body.hidden = !open;
+    head.setAttribute('aria-expanded', String(open));
+  };
+  setOpen(startOpen);
+  head.addEventListener('click', () => setOpen(body.hidden));
   return { head, body };
 }
 
