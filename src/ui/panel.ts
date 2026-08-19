@@ -69,8 +69,12 @@ const LAUNCHER_POLL_MS = 250;
  *  (uniform mesh scaling alone is a no-op under longest-axis normalization).
  *  The cap bounds grid memory: 256 → ≤ 256×1024×256 cells worst case. */
 const MIN_EFFECTIVE_RESOLUTION = 2;
-const MAX_EFFECTIVE_RESOLUTION = 256;
+const MAX_EFFECTIVE_RESOLUTION = 300; // typed-value cap; slider stops at 256
+/** Slider maxima are lower than the typed-value limits: a typed scale up to
+ * ×16 or resolution up to 256 applies for real — the thumb just pins. */
+const RES_SLIDER_MAX = 256;
 const MIN_SCALE = 0.1;
+const SLIDER_SCALE_MAX = 8;
 const MAX_SCALE = 16;
 
 interface Settings {
@@ -562,10 +566,10 @@ export function createPanel(api: TspmlApi): Panel {
     body.appendChild(preview.canvas);
 
     // resolution + solid
-    body.appendChild(slider(doc, 'Resolution', 4, MAX_EFFECTIVE_RESOLUTION, settings.resolution, 1, String, (v) => {
+    body.appendChild(slider(doc, 'Resolution', 4, RES_SLIDER_MAX, settings.resolution, 1, String, (v) => {
       settings.resolution = v;
       scheduleRevoxel();
-    }).el);
+    }, MAX_EFFECTIVE_RESOLUTION).el);
     const solidLabel = doc.createElement('label');
     const solidCheck = doc.createElement('input');
     solidCheck.type = 'checkbox';
@@ -590,10 +594,10 @@ export function createPanel(api: TspmlApi): Panel {
       body.appendChild(ctl.el);
       return ctl;
     });
-    const scaleCtl = slider(doc, 'Scale', MIN_SCALE, 8, pose.scale[0]!, 0.1, (v) => `×${v}`, (v) => {
+    const scaleCtl = slider(doc, 'Scale', MIN_SCALE, SLIDER_SCALE_MAX, pose.scale[0]!, 0.1, (v) => `×${v}`, (v) => {
       pose.scale = [v, v, v]; // the panel slider scales uniformly; per-axis lives on the 3D handles
       scheduleRevoxel();
-    });
+    }, MAX_SCALE);
     poseSliders.push(scaleCtl);
     body.appendChild(scaleCtl.el);
     const resetBtn = btn(doc, '⟲ Reset rotation & scale', () => setPose(identityPose()));
@@ -1041,6 +1045,7 @@ interface SliderCtl {
 function slider(
   doc: Document, label: string, min: number, max: number, value: number,
   step: number, fmt: (v: number) => string, onChange: (v: number) => void,
+  typedMax: number = max,
 ): SliderCtl {
   const el = doc.createElement('div');
   const top = doc.createElement('div');
@@ -1085,9 +1090,12 @@ function slider(
       if (done) return;
       done = true;
       if (commit) {
-        const v = parseTypedValue(edit.value, min, max);
+        const v = parseTypedValue(edit.value, min, typedMax);
         if (v !== null) {
-          input.value = String(v);
+          // A typed value may exceed the DRAG range (typedMax > max): the
+          // thumb pins at max while the readout carries the true value, and
+          // dragging again naturally re-clamps into range.
+          input.value = String(Math.min(max, v));
           readout.textContent = fmt(v);
           onChange(v);
         }
@@ -1110,7 +1118,7 @@ function slider(
   return {
     el,
     set(v, text) {
-      input.value = String(v);
+      input.value = String(Math.min(max, v)); // thumb pins; readout carries the true value
       readout.textContent = text ?? fmt(v);
     },
   };
