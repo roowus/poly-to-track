@@ -107,24 +107,18 @@ describe('buildParts', () => {
     expect(parts.some((p) => p.partId === PART.Finish)).toBe(true);
   });
 
-  it('adds slope ramps on single steps when shaping is on', () => {
+  it('NO slope ramps — empty cells stay empty (ramps removed by request)', () => {
     // y=0 layer: two cells in a row; y=1 layer: only x=0 — a one-cell step.
+    // Builds contain only pieces in material-filled cells; the empty cell
+    // above the lower run gets nothing.
     const step = gridOf([
       ['##'],
       ['#.'],
     ]);
     const parts = buildParts(step, { color: 0, withPad: false });
-    const ramp = parts.find((p) => p.partId === PART.BlockSlopeUp);
-    expect(ramp).toBeDefined();
-    // The ramp fills the empty cell above the lower run: x=1 (tile 4), y=1 (+1 pad lift = 2).
-    expect(ramp!.x).toBe(4);
-    expect(ramp!.y).toBe(2);
-    // Derived from the catalog footprint (BlockSlopeUpLong y=1 at z=−6..−4):
-    // the ramp ascends toward its FILLED neighbor — −x here = DIRS[2] → rot 1.
-    // The old visually-calibrated table put rot 3 — a 180° flip, the
-    // "curved ramp constantly placed 180° offset" bug.
-    expect(ramp!.rotation).toBe(1);
-    expect(ramp!.rotationAxis).toBe(0); // YPositive
+    expect(parts.some((p) => p.partId === PART.BlockSlopeUp)).toBe(false);
+    expect(parts.some((p) => p.partId === 151)).toBe(false); // BlockSlopeUpLong
+    expect(parts).toHaveLength(3); // the two y=0 cells + the one y=1 cell
   });
 
   it('has NO hard part limit — huge grids build fine (soft warning only)', () => {
@@ -428,48 +422,20 @@ describe('fitShapes', () => {
     expect(kinds.filter((k) => k === PART.Block)).toHaveLength(1);
   });
 
-  it('does not ramp gaps between two runs (only single steps)', () => {
-    // y=0 full row of 3; y=1 has ends filled with an empty middle: the middle
-    // sits on material but has TWO filled neighbors — ambiguous, no ramp.
-    const grid = gridOf([
-      ['###'],
-      ['#.#'],
-    ]);
-    const fit = fitShapes(grid);
-    expect(fit.rampParts.size).toBe(0);
-  });
-
-  it('gentle rises use the 2-cell long ramp at half steepness', () => {
-    // Terrain rising one level per two cells: tier-1 body at y0 (x0..5),
-    // tier-2 body at y1 (x4..7), tier-3 at y2 (x6..7). The step cell
-    // (x4,y1) is empty with its only filled neighbor (x5,y1) at DIRS[0],
-    // beyond (x6,y1) open both levels, supported at y0, and the rise
-    // continues (x5,y2 filled) → long ramp (151), not the steep 85.
+  it('NO ramps anywhere — fitShapes emits filled cells only', () => {
+    // Both ramp-friendly terrains (a single step, a gentle rise) now yield
+    // nothing in empty cells: ramps are removed from the shape vocabulary
+    // by request. fitShapes has no rampParts at all.
     const grid = gridOf([
       ['######..'],
       ['....####'],
       ['......##'],
     ]);
     const fit = fitShapes(grid);
-    const longs = [...fit.rampParts.entries()].filter(([, c]) => c.partId === 151);
-    expect(longs.length).toBeGreaterThan(0);
-    // No steep ramp at the same anchor cells.
-    const steeps = [...fit.rampParts.entries()].filter(([, c]) => c.partId === 85);
-    for (const [k] of longs) {
-      expect(steeps.some(([sk]) => sk === k)).toBe(false);
-    }
-  });
-
-  it('steep terrain right behind the gap keeps the steep ramp', () => {
-    // The cell behind the gap is FILLED (terrain steps up again immediately)
-    // — the long ramp's tail has no room, so the steep ramp is correct.
-    // y0: x0..4; y1: x0..1 + x3..4 → gap at (x2,y1) with filled back (x1,y1).
-    const grid = gridOf([
-      ['#####'],
-      ['##.##'],
-    ]);
-    const fit = fitShapes(grid);
-    const longs = [...fit.rampParts.values()].filter((c) => c.partId === 151);
-    expect(longs.length).toBe(0);
+    const kinds = [...fit.filledParts.values()].map((c) => c.partId);
+    expect(kinds).not.toContain(85); // BlockSlopeUp
+    expect(kinds).not.toContain(151); // BlockSlopeUpLong
+    // Filled-cell shaping still works.
+    expect(kinds.every((k) => [29, 53, 54, 155, 188].includes(k))).toBe(true);
   });
 });

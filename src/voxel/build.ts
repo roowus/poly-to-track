@@ -83,10 +83,6 @@ export function buildParts(grid: VoxelGrid, opts: BuildOptions = DEFAULT_BUILD):
         if (grid.cells[key]) {
           const shaped = fit?.filledParts.get(key);
           place(x, y, z, shaped?.partId ?? PART.Block, shaped?.rotation ?? 0, colorAt(key));
-        } else {
-          const ramp = fit?.rampParts.get(key);
-          // A ramp fills an empty cell — color it like the step it leans on.
-          if (ramp) place(x, y, z, ramp.partId, ramp.rotation, colorAt(key - grid.nx));
         }
       }
     }

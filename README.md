@@ -23,9 +23,9 @@ per-block onto the game's palette — textures are sampled **per block**
 a skin or texture atlas genuinely paints the build instead of flattening
 to one color per triangle. Palette matching is **hue-first** (the game's
 custom swatches are dark, so light tints keep their hue — a pastel maps
-to its color, not to white). The builds use the game's full shape
-vocabulary (blocks, half/quarter blocks, slopes) so curved models aren't
-staircases of slabs.
+to its color, not to white). The builds use the game's shaped
+block pieces (blocks, half/quarter blocks, rounded and inner corners) so
+curved models aren't staircases of slabs.
 
 There's also a secondary *Save as track* path that encodes a genuine
 `PolyTrack2…` track code and registers it into your track list through
@@ -122,7 +122,7 @@ STL/OBJ+MTL/glTF/GLB (positions + per-triangle colors) → TriangleMesh
    colors ride along — textured triangles are re-sampled PER VOXEL via
    barycentric UVs at each cell center; interior cells BFS-inherit the
    nearest surface color)
-→ shape fitting: Block / HalfBlock / QuarterBlock / slope per voxel column
+→ shape fitting: Block / HalfBlock / QuarterBlock / corners per voxel column
   (each part gets the nearest game palette color, HSV hue-weighted)
 → INSERT: stage a session (no track writes) + draw a ghost mesh in the
   game's own three.js scene; move = one mesh.position.set, O(1) at any

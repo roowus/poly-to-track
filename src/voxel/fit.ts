@@ -6,14 +6,15 @@
  * - Convex plan corners (two perpendicular sides + the diagonal open) become
  *   HalfBlock — the piece whose footprint is the diagonal half of the slab.
  * - Wall tips (three sides open) become QuarterBlock.
- * - Single-cell steps get a BlockSlopeUp ramp in the empty cell above the
- *   lower run, ascending toward the higher run — Minecraft-stairs smoothing.
+ *
+ * Slope/ramp pieces are deliberately NOT placed: user preference — builds
+ * contain only pieces that sit in material-filled cells. (fitRamp used to
+ * smooth single-cell steps with BlockSlopeUp/UpLong in empty cells.)
  *
  * Rotation ground truth: footprints in the game catalog (chunk 2600) pin the
  * plan orientation of HalfBlock/QuarterBlock at rotation 0, and the tile
  * rotation formula (chunk 5494: rot 1 maps [x,z] → [z,−x−1] about Y+) gives
- * the rest. Slope pieces have a full 4×4 footprint so their ramp direction
- * is NOT derivable from data — SLOPE_UP_ROT below is calibrated visually.
+ * the rest.
  */
 import { AXIS, PART, type PlacedPart } from '../codec/parts';
 import type { VoxelGrid } from './voxelize';
@@ -48,29 +49,6 @@ const HALF_BLOCK_ROT: Record<string, number> = {
 const QUARTER_BLOCK_ROT = [2, 3, 0, 1] as const; // filled dir +x → keep +x edge → rot 2, etc.
 
 /**
- * Rotation that makes BlockSlopeUp ascend toward DIRS[i]. DERIVED from the
- * catalog (chunk 2600): BlockSlopeUpLong keeps its y=1 occupancy at z=−6..−4
- * of a footprint spanning z=−6..1 — the ramp ascends toward −z at rotation 0,
- * i.e. DIRS[3]. The tile rotation (dx,dz)→(dz,−dx) about Y+ then gives
- * ascend-direction → rotation: [+x→? …] as indexed below. (The previous
- * visually-calibrated [1,0,3,2] was 180° off for every direction — the
- * "curved ramp constantly placed 180° offset" report.)
- */
-const SLOPE_UP_ROT = [3, 2, 1, 0] as const;
-
-/**
- * BlockSlopeUpLong (151) shares BlockSlopeUp's ascend direction at rotation 0
- * (top layer toward −z), so the same rotation table applies. Its base spans a
- * SECOND cell beyond the anchor: the anchor is the LOW cell and the extension
- * (toward the ascend direction) is the HIGH cell — a 2-cell ramp rising one
- * unit, half as steep as BlockSlopeUp. It replaces the steep 1-cell ramp when
- * the terrain genuinely descends gently: the cell beyond the step's high run
- * is open at step level AND open one level above it (a sheer drop would clip
- * the long ramp's tail).
- */
-const SLOPE_LONG_PART = 151;
-
-/**
  * BlockOuterCorner (188) rounds a convex corner: rotation 0 keeps an L solid
  * toward +x/+z (the diagonal quadrant at (−x,−z) is cut). For a corner whose
  * OPEN diagonal quadrant is (ox,oz), rotate the CUT to face it:
@@ -102,8 +80,6 @@ export interface FittedCell {
 export interface FitResult {
   /** partId+rotation per filled cell, keyed x + y*nx + z*nx*ny. */
   readonly filledParts: Map<number, FittedCell>;
-  /** Ramp pieces added in EMPTY cells (same key space). */
-  readonly rampParts: Map<number, FittedCell>;
 }
 
 /** Choose a shaped piece for every cell of the grid. */
@@ -114,21 +90,14 @@ export function fitShapes(grid: VoxelGrid): FitResult {
     x >= 0 && x < nx && y >= 0 && y < ny && z >= 0 && z < nz && cells[idx(x, y, z)] !== 0;
 
   const filledParts = new Map<number, FittedCell>();
-  const rampParts = new Map<number, FittedCell>();
-
   for (let z = 0; z < nz; z++) {
     for (let y = 0; y < ny; y++) {
       for (let x = 0; x < nx; x++) {
-        if (filled(x, y, z)) {
-          filledParts.set(idx(x, y, z), fitFilled(x, y, z));
-        } else {
-          const ramp = fitRamp(x, y, z);
-          if (ramp) rampParts.set(idx(x, y, z), ramp);
-        }
+        if (filled(x, y, z)) filledParts.set(idx(x, y, z), fitFilled(x, y, z));
       }
     }
   }
-  return { filledParts, rampParts };
+  return { filledParts };
 
   function fitFilled(x: number, y: number, z: number): FittedCell {
     const open = DIRS.map((d) => !filled(x + d.dx, y, z + d.dz));
@@ -185,37 +154,6 @@ export function fitShapes(grid: VoxelGrid): FitResult {
     }
 
     return { partId: PART.Block, rotation: 0 };
-  }
-
-  function fitRamp(x: number, y: number, z: number): FittedCell | null {
-    // Empty cell resting on material, open above, exactly one filled
-    // horizontal neighbor: a single step — smooth it with an ascending ramp.
-    if (!filled(x, y - 1, z) || filled(x, y + 1, z)) return null;
-    let dir = -1;
-    for (let i = 0; i < 4; i++) {
-      if (filled(x + DIRS[i]!.dx, y, z + DIRS[i]!.dz)) {
-        if (dir !== -1) return null;
-        dir = i;
-      }
-    }
-    if (dir === -1) return null;
-    const rot = SLOPE_UP_ROT[dir]!;
-
-    // Gentle terrain: the long ramp (151) shares the steep ramp's anchor
-    // cell and ascend rotation, but its base extends one cell BACKWARD
-    // (away from the rise), halving the surface slope. Use it whenever that
-    // backward cell is open air above terrain — the tail needs the space and
-    // rests on it. Otherwise the terrain is sheer behind the gap (a ledge,
-    // a corner) and the steep ramp is the correct piece.
-    const d = DIRS[dir]!;
-    const backX = x - d.dx, backZ = z - d.dz;
-    if (
-      !filled(backX, y, backZ) && !filled(backX, y + 1, backZ)
-      && filled(backX, y - 1, backZ)
-    ) {
-      return { partId: SLOPE_LONG_PART, rotation: rot };
-    }
-    return { partId: PART.BlockSlopeUp, rotation: rot };
   }
 }
 
