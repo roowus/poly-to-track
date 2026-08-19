@@ -34,6 +34,22 @@ export const MIN_COVERAGE = 0.05;
 export const NEIGHBOR_RATIO = 0.45;
 export const LIGHTING_HUE_GAP = 0.2; // 72° of hue — adjacent palette steps
 
+/** User-tunable subset of the survival rules (the panel exposes these). */
+export interface QuantizeOptions {
+  /** Max distinct material colors (top coverage masses). */
+  readonly maxColors?: number;
+  /** Shade-merge strength 0–1: a hue-neighbor's entry dies when it covers
+   *  less than this fraction of that neighbor. Higher = more merging. */
+  readonly shadeMerge?: number;
+  /** Minimum share of voxels an entry needs to survive (0–0.2). */
+  readonly minCoverage?: number;
+}
+export const DEFAULT_QUANTIZE: Required<QuantizeOptions> = {
+  maxColors: MAX_SURVIVING_ENTRIES,
+  shadeMerge: NEIGHBOR_RATIO,
+  minCoverage: MIN_COVERAGE,
+};
+
 /** Swatch id → exact sRGB bytes (for repainting survivors). */
 const SWATCH_RGB = new Map<number, [number, number, number]>(
   COLOR_SWATCHES.map((sw) => {
@@ -48,7 +64,10 @@ const SWATCH_RGB = new Map<number, [number, number, number]>(
  * color. Returns the colors array (same buffer, rewritten), or null when the
  * grid carries no colors.
  */
-export function quantizeGridColors(grid: VoxelGrid): Uint8Array | null {
+export function quantizeGridColors(grid: VoxelGrid, opts: QuantizeOptions = {}): Uint8Array | null {
+  const maxColors = Math.max(1, Math.round(opts.maxColors ?? DEFAULT_QUANTIZE.maxColors));
+  const shadeMerge = Math.min(1, Math.max(0, opts.shadeMerge ?? DEFAULT_QUANTIZE.shadeMerge));
+  const minCoverage = Math.min(0.2, Math.max(0, opts.minCoverage ?? DEFAULT_QUANTIZE.minCoverage));
   const colors = grid.colors;
   if (!colors) return null;
   const cells = grid.cells;
@@ -123,11 +142,11 @@ export function quantizeGridColors(grid: VoxelGrid): Uint8Array | null {
         const cnt = survivors.get(other)!;
         if (cnt > neighbor || (cnt === neighbor && dh < worst)) { neighbor = cnt; worst = dh; }
       }
-      return neighbor > 0 && survivors.get(id)! < NEIGHBOR_RATIO * neighbor;
+      return neighbor > 0 && survivors.get(id)! < shadeMerge * neighbor;
     };
     const ranked = [...survivors.entries()].sort((a, b) => b[1] - a[1]);
     const drop = ranked.find(([id, cnt], idx) =>
-      idx >= MAX_SURVIVING_ENTRIES || cnt / total < MIN_COVERAGE || isDwarfed(id))
+      idx >= maxColors || cnt / total < minCoverage || isDwarfed(id))
       ?? null;
     if (drop === null || survivors.size <= 1) break;
     survivors.delete(drop[0]);

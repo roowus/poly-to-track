@@ -9,7 +9,7 @@
  * playable.
  */
 import { AXIS, COLOR, nearestColorId, PART, type PlacedPart } from '../codec/parts';
-import { fitShapes } from './fit';
+import { fitShapes, type FitOptions } from './fit';
 import type { VoxelGrid } from './voxelize';
 
 export interface BuildOptions {
@@ -24,10 +24,12 @@ export interface BuildOptions {
   /** Include the Start/Finish drive pad (default true). */
   readonly withPad?: boolean;
   /**
-   * Fit shaped pieces (HalfBlock corners, QuarterBlock tips, slope ramps on
+   * Fit shaped pieces (HalfBlock corners, QuarterBlock tips, ramps on
    * steps) instead of only rectangular Blocks. Default true.
    */
   readonly shaped?: boolean;
+  /** Which shaped pieces are allowed (user toggles). Default: all on. */
+  readonly fit?: FitOptions;
 }
 
 export const DEFAULT_BUILD: BuildOptions = { color: COLOR.Default };
@@ -47,7 +49,7 @@ export const BLOCK_XZ_STRIDE = 4;
 export function buildParts(grid: VoxelGrid, opts: BuildOptions = DEFAULT_BUILD): PlacedPart[] {
   const [ox, oy, oz] = opts.offset ?? [0, 0, 0];
   const parts: PlacedPart[] = [];
-  const fit = opts.shaped !== false ? fitShapes(grid) : null;
+  const fit = opts.shaped !== false ? fitShapes(grid, opts.fit) : null;
   const voxColors = opts.useModelColors !== false ? grid.colors ?? null : null;
   // Distinct voxel colors are few after palette mapping — memoize by packed RGB.
   const colorCache = new Map<number, number>();

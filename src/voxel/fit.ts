@@ -77,13 +77,26 @@ export interface FittedCell {
   readonly rotation: number;
 }
 
+/** Which shaped pieces the user allows; disabled shapes fall back to plainer
+ *  ones (OuterCorner → HalfBlock or Block, HalfBlock → Block, etc.). */
+export interface FitOptions {
+  readonly halfBlocks?: boolean;
+  readonly quarterBlocks?: boolean;
+  readonly outerCorners?: boolean;
+  readonly innerCorners?: boolean;
+}
+export const DEFAULT_FIT: Required<FitOptions> = {
+  halfBlocks: true, quarterBlocks: true, outerCorners: true, innerCorners: true,
+};
+
 export interface FitResult {
   /** partId+rotation per filled cell, keyed x + y*nx + z*nx*ny. */
   readonly filledParts: Map<number, FittedCell>;
 }
 
 /** Choose a shaped piece for every cell of the grid. */
-export function fitShapes(grid: VoxelGrid): FitResult {
+export function fitShapes(grid: VoxelGrid, opts: FitOptions = {}): FitResult {
+  const { halfBlocks, quarterBlocks, outerCorners, innerCorners } = { ...DEFAULT_FIT, ...opts };
   const { nx, ny, nz, cells } = grid;
   const idx = (x: number, y: number, z: number) => x + y * nx + z * nx * ny;
   const filled = (x: number, y: number, z: number): boolean =>
@@ -104,7 +117,7 @@ export function fitShapes(grid: VoxelGrid): FitResult {
     const openCount = open.filter(Boolean).length;
 
     // Wall tip: three open sides — keep a quarter wedge facing the run.
-    if (openCount === 3) {
+    if (openCount === 3 && quarterBlocks) {
       const keep = open.indexOf(false);
       return { partId: PART.QuarterBlock, rotation: QUARTER_BLOCK_ROT[keep]! };
     }
@@ -129,10 +142,11 @@ export function fitShapes(grid: VoxelGrid): FitResult {
             const j2 = (j + 2) % 4;
             const sideA = filled(x + DIRS[i2]!.dx, y, z + DIRS[i2]!.dz);
             const sideB = filled(x + DIRS[j2]!.dx, y, z + DIRS[j2]!.dz);
-            if (sideA && sideB) {
+            if (sideA && sideB && outerCorners) {
               return { partId: PART.OuterCorner, rotation: OUTER_CORNER_ROT[`${ox},${oz}`]! };
             }
-            return { partId: PART.HalfBlock, rotation: half };
+            if (halfBlocks) return { partId: PART.HalfBlock, rotation: half };
+            break; // no diagonal shaping allowed
           }
         }
       }
@@ -144,7 +158,7 @@ export function fitShapes(grid: VoxelGrid): FitResult {
       const i = open.indexOf(true);
       const ox = DIRS[i]!.dx, oz = DIRS[i]!.dz; // toward the open side
       for (const [ax, az] of [[oz, -ox], [-oz, ox]] as const) { // the two diagonals across the open side
-        if (filled(x + ax, y, z + az) && !filled(x + ax - ox, y, z + az - oz)) {
+        if (innerCorners && filled(x + ax, y, z + az) && !filled(x + ax - ox, y, z + az - oz)) {
           // filled diagonal neighbor whose side neighbor toward us is open:
           // this cell is the inner corner of an L-step.
           const rot = INNER_CORNER_ROT[`${-ax + ox},${-az + oz}`];

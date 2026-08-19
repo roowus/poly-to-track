@@ -39,7 +39,8 @@ import type { DecodedImage } from '../mesh/texture';
 import { applyTransform, IDENTITY, type MeshTransform } from '../mesh/transform';
 import { meshBounds, type TriangleMesh } from '../mesh/types';
 import { buildParts, PARTS_WARNING, type BuildOptions } from '../voxel/build';
-import { quantizeGridColors } from '../voxel/palette';
+import type { FitOptions } from '../voxel/fit';
+import { DEFAULT_QUANTIZE, quantizeGridColors } from '../voxel/palette';
 import { voxelize, type VoxelGrid } from '../voxel/voxelize';
 import type { TspmlApi } from '../tspml-api';
 import { createVoxelPreview, type VoxelPreview } from './preview';
@@ -82,6 +83,15 @@ interface Settings {
   solid: boolean;
   color: number;
   useModelColors: boolean;
+  /** Coloring: max material colors, shade-merge strength, coverage floor. */
+  maxColors: number;
+  shadeMerge: number;
+  minCoverage: number;
+  /** Shape vocabulary toggles (disabled shapes fall back to Block). */
+  halfBlocks: boolean;
+  quarterBlocks: boolean;
+  outerCorners: boolean;
+  innerCorners: boolean;
 }
 
 const DEFAULTS: Settings = {
@@ -89,6 +99,13 @@ const DEFAULTS: Settings = {
   solid: false,
   color: COLOR_SWATCHES[0]!.id,
   useModelColors: true,
+  maxColors: DEFAULT_QUANTIZE.maxColors,
+  shadeMerge: DEFAULT_QUANTIZE.shadeMerge,
+  minCoverage: DEFAULT_QUANTIZE.minCoverage,
+  halfBlocks: true,
+  quarterBlocks: true,
+  outerCorners: true,
+  innerCorners: true,
 };
 
 /** Rotation/scale are per-model staging state, not persisted settings. */
@@ -639,6 +656,50 @@ export function createPanel(api: TspmlApi): Panel {
     }
     body.appendChild(swatchRow);
 
+    // ---- Settings (coloring thresholds + shape vocabulary) — collapsible ----
+    const settingsToggle = btn(doc, '⚙ Coloring & shapes', () => {
+      settingsBody.style.display = settingsBody.style.display === 'none' ? '' : 'none';
+    });
+    settingsToggle.style.marginTop = '10px';
+    body.appendChild(settingsToggle);
+    const settingsBody = doc.createElement('div');
+    settingsBody.style.display = 'none';
+    settingsBody.style.paddingTop = '6px';
+    body.appendChild(settingsBody);
+
+    settingsBody.appendChild(sectionTitle(doc, 'Coloring'));
+    const persistSlider = (label: string, min: number, max: number, value: number, step: number, fmt: (v: number) => string, set: (v: number) => void): void => {
+      const ctl = slider(doc, label, min, max, value, step, fmt, (v) => {
+        set(v);
+        saveSettings(settings);
+        scheduleRevoxel();
+      });
+      settingsBody.appendChild(ctl.el);
+    };
+    persistSlider('Max colors', 1, 10, settings.maxColors, 1, String, (v) => { settings.maxColors = v; });
+    persistSlider('Shade merge', 0, 0.9, settings.shadeMerge, 0.05, (v) => `${Math.round(v * 100)}%`, (v) => { settings.shadeMerge = v; });
+    persistSlider('Min coverage', 0, 0.2, settings.minCoverage, 0.01, (v) => `${Math.round(v * 100)}%`, (v) => { settings.minCoverage = v; });
+
+    settingsBody.appendChild(sectionTitle(doc, 'Block shapes used'));
+    const shapeCheck = (label: string, key: 'halfBlocks' | 'quarterBlocks' | 'outerCorners' | 'innerCorners'): void => {
+      const l = doc.createElement('label');
+      const c = doc.createElement('input');
+      c.type = 'checkbox';
+      c.checked = settings[key];
+      c.addEventListener('change', () => {
+        settings[key] = c.checked;
+        saveSettings(settings);
+        scheduleRevoxel(); // shapes live in buildParts, but revoxel refreshes ghost+stats
+        rebuildSessionParts();
+      });
+      l.append(c, doc.createTextNode(label));
+      settingsBody.appendChild(l);
+    };
+    shapeCheck('Half blocks (diagonal corners)', 'halfBlocks');
+    shapeCheck('Quarter blocks (wall tips)', 'quarterBlocks');
+    shapeCheck('Rounded corners', 'outerCorners');
+    shapeCheck('Inner corner fillers', 'innerCorners');
+
     // stats + actions
     stats = doc.createElement('div');
     stats.className = 'ptt-note';
@@ -884,7 +945,13 @@ export function createPanel(api: TspmlApi): Panel {
     // them — preview, ghost and placed parts then all agree, and baked-lighting
     // hue shifts stay inside their material instead of scattering across
     // saturated swatches (the "mountain goes yellow/red" bug).
-    if (settings.useModelColors !== false) quantizeGridColors(grid);
+    if (settings.useModelColors !== false) {
+      quantizeGridColors(grid, {
+        maxColors: settings.maxColors,
+        shadeMerge: settings.shadeMerge,
+        minCoverage: settings.minCoverage,
+      });
+    }
     refreshPreview();
     refreshStats();
     rebuildSessionParts();
@@ -913,12 +980,22 @@ export function createPanel(api: TspmlApi): Panel {
     if (saveBtn) saveBtn.disabled = disabled;
   }
 
+  function fitOptions(): FitOptions {
+    return {
+      halfBlocks: settings.halfBlocks,
+      quarterBlocks: settings.quarterBlocks,
+      outerCorners: settings.outerCorners,
+      innerCorners: settings.innerCorners,
+    };
+  }
+
   function sessionBuildOptions(): BuildOptions {
     return {
       color: settings.color,
       useModelColors: settings.useModelColors,
       withPad: false,
       offset: sessionBaseOffset,
+      fit: fitOptions(),
     };
   }
 
@@ -975,7 +1052,7 @@ export function createPanel(api: TspmlApi): Panel {
     }
     try {
       const name = nameInput?.value.trim() || meshName || 'poly-to-track model';
-      const parts = buildParts(grid, { color: settings.color, useModelColors: settings.useModelColors });
+      const parts = buildParts(grid, { color: settings.color, useModelColors: settings.useModelColors, fit: fitOptions() });
       const code = toExportString(parts, { name, author: 'poly-to-track' });
       setStatus('Saving…', false);
       const res = await api.tracks.register({ code, name, overwrite: true, persist: true });

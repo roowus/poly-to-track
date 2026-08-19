@@ -384,6 +384,52 @@ describe('dominant-color quantization', () => {
     expect([out[0]!, out[1]!, out[2]!]).toEqual([0xb8, 0xb8, 0xb8]);
   });
 
+  it('maxColors option caps the material count', () => {
+    // A 3-material character quantized to maxColors 1 → a single swatch.
+    const nx = 20, nz = 10;
+    const cells = new Uint8Array(nx * nz).fill(1);
+    const c = new Uint8Array(nx * nz * 3);
+    for (let i = 0; i < nx * nz; i++) {
+      const skin = i < 120, jeans = i >= 180;
+      c[i * 3] = jeans ? 50 : skin ? 224 : 110;
+      c[i * 3 + 1] = jeans ? 70 : skin ? 172 : 75;
+      c[i * 3 + 2] = jeans ? 140 : skin ? 150 : 45;
+    }
+    const grid = { nx, ny: 1, nz, cells, filledCount: nx * nz, yAspect: 1, colors: c };
+    const out = quantizeGridColors(grid, { maxColors: 1 })!;
+    const hues = new Set<number>();
+    for (let i = 0; i < nx * nz; i++) {
+      hues.add(nearestColorId(out[i * 3]!, out[i * 3 + 1]!, out[i * 3 + 2]!));
+    }
+    expect(hues.size).toBe(1);
+  });
+
+  it('shadeMerge 0 keeps the mountain bands (merging disabled)', () => {
+    // The v0.6.9 mountain merges to exactly 2 with defaults; shadeMerge 0
+    // disables the hue-neighbor rule so the yellow band survives.
+    const nx = 12, nz = 12;
+    const cells = new Uint8Array(nx * nz).fill(1);
+    const c = new Uint8Array(nx * nz * 3);
+    const set = (i: number, r: number, g: number, b: number) => {
+      c[i * 3] = r; c[i * 3 + 1] = g; c[i * 3 + 2] = b;
+    };
+    for (let z = 0; z < nz; z++) {
+      for (let x = 0; x < nx; x++) {
+        const i = x + z * nx;
+        x + z * nx < 72 ? set(i, 60, 120, 60) : set(i, 120, 90, 55);
+      }
+    }
+    for (let k = 0; k < 6; k++) set(k * 7 % 72, 130, 170, 70);
+    for (let k = 0; k < 6; k++) set(72 + (k * 7 % 72), 160, 130, 60);
+    const grid = { nx, ny: 1, nz, cells, filledCount: nx * nz, yAspect: 1, colors: c };
+    const out = quantizeGridColors(grid, { shadeMerge: 0 })!;
+    const hues = new Set<number>();
+    for (let i = 0; i < nx * nz; i++) {
+      hues.add(nearestColorId(out[i * 3]!, out[i * 3 + 1]!, out[i * 3 + 2]!));
+    }
+    expect(hues.size).toBeGreaterThanOrEqual(3); // yellow band survives
+  });
+
   it('uncolored grids and sentinel cells pass through', () => {
     const plain = gridOf([['##']]);
     expect(quantizeGridColors(plain)).toBeNull(); // no colors channel
@@ -463,5 +509,30 @@ describe('fitShapes', () => {
     expect(kinds).not.toContain(151); // BlockSlopeUpLong
     // Filled-cell shaping still works.
     expect(kinds.every((k) => [29, 53, 54, 155, 188].includes(k))).toBe(true);
+  });
+
+  it('shape toggles fall back to plainer pieces', () => {
+    // A 3×3 plate: all shaping on → 4 OuterCorners; outer corners OFF →
+    // 4 HalfBlocks; halves OFF too → 9 plain Blocks.
+    const grid = gridOf([
+      ['###', '###', '###'],
+    ]);
+    const onlyOuter = [...fitShapes(grid, { outerCorners: false }).filledParts.values()];
+    expect(onlyOuter.filter((c) => c.partId === PART.OuterCorner)).toHaveLength(0);
+    expect(onlyOuter.filter((c) => c.partId === PART.HalfBlock)).toHaveLength(4);
+
+    const plain = [...fitShapes(grid, { outerCorners: false, halfBlocks: false }).filledParts.values()];
+    expect(new Set(plain.map((c) => c.partId))).toEqual(new Set([PART.Block]));
+    expect(plain).toHaveLength(9);
+
+    // Quarter blocks off: a 1×3 wall keeps plain Blocks.
+    const wall = gridOf([['###']]);
+    const wallFit = [...fitShapes(wall, { quarterBlocks: false }).filledParts.values()];
+    expect(new Set(wallFit.map((c) => c.partId))).toEqual(new Set([PART.Block]));
+
+    // Inner corners off: the L-notch keeps Block/Half instead of InnerCorner.
+    const notch = gridOf([['###', '##.', '##.']]);
+    const notchFit = [...fitShapes(notch, { innerCorners: false }).filledParts.values()];
+    expect(notchFit.some((c) => c.partId === PART.InnerCorner)).toBe(false);
   });
 });
