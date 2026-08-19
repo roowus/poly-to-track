@@ -49,6 +49,15 @@ const HALF_BLOCK_ROT: Record<string, number> = {
 const QUARTER_BLOCK_ROT = [2, 3, 0, 1] as const; // filled dir +x → keep +x edge → rot 2, etc.
 
 /**
+ * Rotation that makes BlockSlopedUp (71) ascend toward DIRS[i]. Same
+ * convention as the removed BlockSlopeUp family (the catalog footprints of
+ * both keep their raised near-edge toward −z at rotation 0).
+ */
+const SLOPED_UP_ROT = [3, 2, 1, 0] as const;
+/** BlockSlopedUp part id (kept out of PART to avoid re-listing ramps). */
+const SOFT_EDGE_PART = 71;
+
+/**
  * BlockOuterCorner (188) rounds a convex corner: rotation 0 keeps an L solid
  * toward +x/+z (the diagonal quadrant at (−x,−z) is cut). For a corner whose
  * OPEN diagonal quadrant is (ox,oz), rotate the CUT to face it:
@@ -84,9 +93,14 @@ export interface FitOptions {
   readonly quarterBlocks?: boolean;
   readonly outerCorners?: boolean;
   readonly innerCorners?: boolean;
+  /** Soft half-height edges: top-exposed cells at a 1-step boundary become
+   *  BlockSlopedUp (71) facing the rise — a half-height lip instead of a
+   *  sheer full-block step. Off by default (changes the silhouette). */
+  readonly softEdges?: boolean;
 }
 export const DEFAULT_FIT: Required<FitOptions> = {
   halfBlocks: true, quarterBlocks: true, outerCorners: true, innerCorners: true,
+  softEdges: false,
 };
 
 export interface FitResult {
@@ -96,7 +110,7 @@ export interface FitResult {
 
 /** Choose a shaped piece for every cell of the grid. */
 export function fitShapes(grid: VoxelGrid, opts: FitOptions = {}): FitResult {
-  const { halfBlocks, quarterBlocks, outerCorners, innerCorners } = { ...DEFAULT_FIT, ...opts };
+  const { halfBlocks, quarterBlocks, outerCorners, innerCorners, softEdges } = { ...DEFAULT_FIT, ...opts };
   const { nx, ny, nz, cells } = grid;
   const idx = (x: number, y: number, z: number) => x + y * nx + z * nx * ny;
   const filled = (x: number, y: number, z: number): boolean =>
@@ -165,6 +179,19 @@ export function fitShapes(grid: VoxelGrid, opts: FitOptions = {}): FitResult {
           if (rot !== undefined) return { partId: PART.InnerCorner, rotation: rot };
         }
       }
+    }
+
+    // Soft half-height lip: a top-exposed cell (nothing above) with exactly
+    // ONE horizontal neighbor that has material above it (a 1-step rise)
+    // becomes a BlockSlopedUp facing that rise — a half-height transition
+    // instead of a full sheer step. Only fires on unambiguous single rises.
+    if (softEdges && openCount >= 1 && !filled(x, y + 1, z)) {
+      let rise = -1;
+      let rises = 0;
+      for (let i = 0; i < 4; i++) {
+        if (filled(x + DIRS[i]!.dx, y + 1, z + DIRS[i]!.dz)) { rise = i; rises++; }
+      }
+      if (rises === 1) return { partId: SOFT_EDGE_PART, rotation: SLOPED_UP_ROT[rise]! };
     }
 
     return { partId: PART.Block, rotation: 0 };

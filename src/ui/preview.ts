@@ -86,6 +86,8 @@ export function cubeGeometry(
 export interface VoxelPreview {
   readonly canvas: HTMLCanvasElement;
   setGrid(grid: VoxelGrid | null, colorHex: string, useModelColors?: boolean): void;
+  /** Wrapper holding the canvas + zoom overlay — append THIS to the UI. */
+  readonly container: HTMLDivElement;
   dispose(): void;
 }
 
@@ -105,6 +107,7 @@ export function createVoxelPreview(width: number, height: number, doc: Document 
   let yaw = Math.PI / 5;
   let pitch = Math.PI / 7;
   let dragging = false;
+  let zoom = 1;
   let lastX = 0;
   let lastY = 0;
   let raf = 0;
@@ -130,7 +133,7 @@ export function createVoxelPreview(width: number, height: number, doc: Document 
     const ya = grid.yAspect;
     const midX = grid.nx / 2, midY = (grid.ny * ya) / 2, midZ = grid.nz / 2;
     const extent = Math.max(grid.nx, grid.ny * ya, grid.nz);
-    const scale = (Math.min(w, h) * 0.72) / extent;
+    const scale = ((Math.min(w, h) * 0.72) / extent) * zoom;
 
     const voxColors = modelColors ? grid.colors ?? null : null;
     const base = parseInt(colorHex.slice(1), 16);
@@ -253,6 +256,40 @@ export function createVoxelPreview(width: number, height: number, doc: Document 
     try { canvas.releasePointerCapture(e.pointerId); } catch { /* best-effort */ }
     canvas.style.cursor = 'grab';
   };
+  // Zoom: wheel (or pinch: ctrlKey wheel) scales the model view 0.4–6×.
+  const onWheel = (e: WheelEvent) => {
+    e.preventDefault();
+    const factor = Math.exp(-e.deltaY * 0.0012);
+    zoom = Math.min(6, Math.max(0.4, zoom * factor));
+    requestDraw();
+  };
+  canvas.addEventListener('wheel', onWheel, { passive: false });
+  // Visible zoom controls (top-right overlay) — wheel zoom exists, but the
+  // buttons make the capability discoverable and give a reset.
+  const zoomBox = doc.createElement('div');
+  zoomBox.style.cssText = 'position:absolute;top:6px;right:6px;display:flex;gap:4px;z-index:2';
+  const zoomBtn = (label: string, fn: () => void): HTMLButtonElement => {
+    const b = doc.createElement('button');
+    b.type = 'button';
+    b.textContent = label;
+    b.title = label === '+' ? 'Zoom in' : label === '−' ? 'Zoom out' : 'Reset zoom';
+    b.style.cssText = 'width:24px;height:24px;padding:0;font-size:15px;line-height:1;'
+      + 'border:1px solid rgba(255,255,255,.35);border-radius:4px;background:rgba(20,26,54,.75);color:#fff;cursor:pointer';
+    b.addEventListener('click', fn);
+    zoomBox.appendChild(b);
+    return b;
+  };
+  zoomBtn('+', () => { zoom = Math.min(6, zoom * 1.25); requestDraw(); });
+  zoomBtn('−', () => { zoom = Math.max(0.4, zoom / 1.25); requestDraw(); });
+  zoomBtn('⟲', () => { zoom = 1; requestDraw(); });
+  // Mount the canvas + zoom overlay in one wrapper: the preview is built
+  // BEFORE it is appended to the panel (parentElement is null at this
+  // point), so relying on the parent fails silently. The wrapper is what
+  // the panel appends; callers can treat `container` like the canvas.
+  const container = doc.createElement('div');
+  container.style.cssText = 'position:relative;width:100%';
+  container.append(canvas, zoomBox);
+
   canvas.addEventListener('pointerdown', onPointerDown);
   canvas.addEventListener('pointermove', onPointerMove);
   canvas.addEventListener('pointerup', onPointerUp);
@@ -262,6 +299,7 @@ export function createVoxelPreview(width: number, height: number, doc: Document 
 
   return {
     canvas,
+    container,
     setGrid(g, hex, useModelColors = true) {
       grid = g;
       colorHex = hex;
@@ -274,6 +312,8 @@ export function createVoxelPreview(width: number, height: number, doc: Document 
       canvas.removeEventListener('pointermove', onPointerMove);
       canvas.removeEventListener('pointerup', onPointerUp);
       canvas.removeEventListener('pointercancel', onPointerUp);
+      canvas.removeEventListener('wheel', onWheel);
+      zoomBox.remove();
       canvas.remove();
     },
   };

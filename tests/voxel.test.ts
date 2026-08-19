@@ -494,6 +494,24 @@ describe('fitShapes', () => {
     expect(kinds.filter((k) => k === PART.Block)).toHaveLength(1);
   });
 
+  it('softEdges places BlockSlopedUp lips at single rises (off by default)', () => {
+    // A 1-step terrace: y0 full row of 4, y1 first cell only. With softEdges
+    // the exposed y0 cells adjacent to the rise become BlockSlopedUp (71).
+    const grid = gridOf([
+      ['####'],
+      ['#...'],
+    ]);
+    const off = [...fitShapes(grid).filledParts.values()];
+    expect(off.some((c) => c.partId === 71)).toBe(false); // default: plain
+
+    const on = [...fitShapes(grid, { softEdges: true }).filledParts.values()];
+    const lips = on.filter((c) => c.partId === 71);
+    expect(lips.length).toBeGreaterThan(0);
+    // The rise is the y1 cell at x=0 — the lip at (x1,y0) faces −x
+    // (DIRS[2]) → SLOPED_UP_ROT[2] = 1.
+    expect(lips.some((c) => c.rotation === 1)).toBe(true);
+  });
+
   it('NO ramps anywhere — fitShapes emits filled cells only', () => {
     // Both ramp-friendly terrains (a single step, a gentle rise) now yield
     // nothing in empty cells: ramps are removed from the shape vocabulary

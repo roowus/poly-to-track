@@ -40,7 +40,7 @@ import { applyTransform, IDENTITY, type MeshTransform } from '../mesh/transform'
 import { meshBounds, type TriangleMesh } from '../mesh/types';
 import { buildParts, PARTS_WARNING, type BuildOptions } from '../voxel/build';
 import type { FitOptions } from '../voxel/fit';
-import { DEFAULT_QUANTIZE, quantizeGridColors } from '../voxel/palette';
+import { DEFAULT_QUANTIZE, LIGHTING_HUE_GAP, quantizeGridColors } from '../voxel/palette';
 import { voxelize, type VoxelGrid } from '../voxel/voxelize';
 import type { TspmlApi } from '../tspml-api';
 import { createVoxelPreview, type VoxelPreview } from './preview';
@@ -87,11 +87,17 @@ interface Settings {
   maxColors: number;
   shadeMerge: number;
   minCoverage: number;
+  /** Split value-bimodal entries (light skin vs dark clothes in one hue). */
+  valueSplit: boolean;
+  /** Hue distance (0.05–0.4) within which a small neighbor counts as
+   *  lighting of the bigger one (the shade-merge scope). */
+  lightHueGap: number;
   /** Shape vocabulary toggles (disabled shapes fall back to Block). */
   halfBlocks: boolean;
   quarterBlocks: boolean;
   outerCorners: boolean;
   innerCorners: boolean;
+  softEdges: boolean;
 }
 
 const DEFAULTS: Settings = {
@@ -102,10 +108,13 @@ const DEFAULTS: Settings = {
   maxColors: DEFAULT_QUANTIZE.maxColors,
   shadeMerge: DEFAULT_QUANTIZE.shadeMerge,
   minCoverage: DEFAULT_QUANTIZE.minCoverage,
+  valueSplit: true,
+  lightHueGap: LIGHTING_HUE_GAP,
   halfBlocks: true,
   quarterBlocks: true,
   outerCorners: true,
   innerCorners: true,
+  softEdges: false,
 };
 
 /** Rotation/scale are per-model staging state, not persisted settings. */
@@ -580,7 +589,7 @@ export function createPanel(api: TspmlApi): Panel {
 
     // preview
     preview = createVoxelPreview(336, 210, doc);
-    body.appendChild(preview.canvas);
+    body.appendChild(preview.container);
 
     // resolution + solid
     body.appendChild(slider(doc, 'Resolution', 4, RES_SLIDER_MAX, settings.resolution, 1, String, (v) => {
@@ -600,7 +609,8 @@ export function createPanel(api: TspmlApi): Panel {
 
     // rotate + scale — one drag anywhere on a slider = any angle; snaps to 5°.
     // Everything here mirrors the in-viewport Blender handles via setPose.
-    body.appendChild(sectionTitle(doc, 'Rotate (drag — any angle)'));
+    const poseDd = dropdown(doc, 'Rotate & scale');
+    body.append(poseDd.head, poseDd.body);
     poseSliders = (['X', 'Y', 'Z'] as const).map((axis, i) => {
       const ctl = slider(doc, `${axis} axis`, -180, 180, pose.rotate[i]!, 5, (v) => `${v}°`, (v) => {
         const rotate: [number, number, number] = [...pose.rotate];
@@ -608,7 +618,7 @@ export function createPanel(api: TspmlApi): Panel {
         pose.rotate = rotate;
         scheduleRevoxel();
       });
-      body.appendChild(ctl.el);
+      poseDd.body.appendChild(ctl.el);
       return ctl;
     });
     const scaleCtl = slider(doc, 'Scale', MIN_SCALE, SLIDER_SCALE_MAX, pose.scale[0]!, 0.1, (v) => `×${v}`, (v) => {
@@ -616,9 +626,9 @@ export function createPanel(api: TspmlApi): Panel {
       scheduleRevoxel();
     }, MAX_SCALE);
     poseSliders.push(scaleCtl);
-    body.appendChild(scaleCtl.el);
+    poseDd.body.appendChild(scaleCtl.el);
     const resetBtn = btn(doc, '⟲ Reset rotation & scale', () => setPose(identityPose()));
-    body.appendChild(resetBtn);
+    poseDd.body.appendChild(resetBtn);
     syncPoseSliders();
 
     // color
@@ -656,17 +666,10 @@ export function createPanel(api: TspmlApi): Panel {
     }
     body.appendChild(swatchRow);
 
-    // ---- Settings (coloring thresholds + shape vocabulary) — collapsible ----
-    const settingsToggle = btn(doc, '⚙ Coloring & shapes', () => {
-      settingsBody.style.display = settingsBody.style.display === 'none' ? '' : 'none';
-    });
-    settingsToggle.style.marginTop = '10px';
-    body.appendChild(settingsToggle);
-    const settingsBody = doc.createElement('div');
-    settingsBody.style.display = 'none';
-    settingsBody.style.paddingTop = '6px';
-    body.appendChild(settingsBody);
-
+    // ---- Settings dropdowns (coloring + shapes) ----
+    const colorDd = dropdown(doc, 'Color mapping ▸ settings');
+    body.append(colorDd.head, colorDd.body);
+    const settingsBody = colorDd.body;
     settingsBody.appendChild(sectionTitle(doc, 'Coloring'));
     const persistSlider = (label: string, min: number, max: number, value: number, step: number, fmt: (v: number) => string, set: (v: number) => void): void => {
       const ctl = slider(doc, label, min, max, value, step, fmt, (v) => {
@@ -680,8 +683,33 @@ export function createPanel(api: TspmlApi): Panel {
     persistSlider('Shade merge', 0, 0.9, settings.shadeMerge, 0.05, (v) => `${Math.round(v * 100)}%`, (v) => { settings.shadeMerge = v; });
     persistSlider('Min coverage', 0, 0.2, settings.minCoverage, 0.01, (v) => `${Math.round(v * 100)}%`, (v) => { settings.minCoverage = v; });
 
-    settingsBody.appendChild(sectionTitle(doc, 'Block shapes used'));
-    const shapeCheck = (label: string, key: 'halfBlocks' | 'quarterBlocks' | 'outerCorners' | 'innerCorners'): void => {
+    // More color-mapping controls: the value-split heuristic (skin vs
+    // clothes) can be turned off, and the lighting hue-gap can be widened.
+    const valueSplitLabel = doc.createElement('label');
+    const valueSplitCheck = doc.createElement('input');
+    valueSplitCheck.type = 'checkbox';
+    valueSplitCheck.checked = settings.valueSplit;
+    valueSplitCheck.addEventListener('change', () => {
+      settings.valueSplit = valueSplitCheck.checked;
+      saveSettings(settings);
+      scheduleRevoxel();
+    });
+    valueSplitLabel.append(valueSplitCheck, doc.createTextNode('Split light/dark in one color (skin vs clothes)'));
+    settingsBody.appendChild(valueSplitLabel);
+    {
+      const ctl = slider(doc, 'Lighting hue range', 0.05, 0.4, settings.lightHueGap, 0.05, (v) => `${Math.round(v * 360)}°`, (v) => {
+        settings.lightHueGap = v;
+        saveSettings(settings);
+        scheduleRevoxel();
+      });
+      settingsBody.appendChild(ctl.el);
+    }
+
+    // ---- Shapes dropdown ----
+    const shapeDd = dropdown(doc, 'Block types used ▸ settings');
+    body.append(shapeDd.head, shapeDd.body);
+    const shapeBody = shapeDd.body;
+    const shapeCheck = (label: string, key: 'halfBlocks' | 'quarterBlocks' | 'outerCorners' | 'innerCorners' | 'softEdges'): void => {
       const l = doc.createElement('label');
       const c = doc.createElement('input');
       c.type = 'checkbox';
@@ -693,12 +721,13 @@ export function createPanel(api: TspmlApi): Panel {
         rebuildSessionParts();
       });
       l.append(c, doc.createTextNode(label));
-      settingsBody.appendChild(l);
+      shapeBody.appendChild(l);
     };
     shapeCheck('Half blocks (diagonal corners)', 'halfBlocks');
     shapeCheck('Quarter blocks (wall tips)', 'quarterBlocks');
     shapeCheck('Rounded corners', 'outerCorners');
     shapeCheck('Inner corner fillers', 'innerCorners');
+    shapeCheck('Soft half-height edges (top surfaces)', 'softEdges');
 
     // stats + actions
     stats = doc.createElement('div');
@@ -950,6 +979,8 @@ export function createPanel(api: TspmlApi): Panel {
         maxColors: settings.maxColors,
         shadeMerge: settings.shadeMerge,
         minCoverage: settings.minCoverage,
+        valueSplit: settings.valueSplit,
+        lightHueGap: settings.lightHueGap,
       });
     }
     refreshPreview();
@@ -1117,6 +1148,26 @@ interface SliderCtl {
   /** Move the slider + readout WITHOUT firing onChange (external updates —
    *  e.g. the 3D handles rotating the model — mirror into the panel). */
   set(value: number, readout?: string): void;
+}
+
+/**
+ * A labeled collapsible section: a full-width button that toggles a body.
+ * The ▼/▲ marker makes it read as a dropdown; returns the body element so
+ * callers append controls into it.
+ */
+function dropdown(doc: Document, title: string, startOpen = false): { head: HTMLButtonElement; body: HTMLDivElement } {
+  const head = btn(doc, `${title}  ▼`, () => {
+    const open = body.style.display !== 'none';
+    body.style.display = open ? 'none' : '';
+    head.textContent = `${title}  ${open ? '▼' : '▲'}`;
+  });
+  head.style.marginTop = '10px';
+  head.style.width = '100%';
+  const body = doc.createElement('div');
+  body.style.display = startOpen ? '' : 'none';
+  body.style.paddingTop = '6px';
+  if (startOpen) head.textContent = `${title}  ▲`;
+  return { head, body };
 }
 
 function slider(

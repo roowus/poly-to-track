@@ -43,11 +43,18 @@ export interface QuantizeOptions {
   readonly shadeMerge?: number;
   /** Minimum share of voxels an entry needs to survive (0–0.2). */
   readonly minCoverage?: number;
+  /** Split value-bimodal entries (light skin vs dark clothes). */
+  readonly valueSplit?: boolean;
+  /** Hue distance within which a smaller neighbor counts as lighting of a
+   *  bigger one (the shade-merge scope). Wider = more aggressive merging. */
+  readonly lightHueGap?: number;
 }
 export const DEFAULT_QUANTIZE: Required<QuantizeOptions> = {
   maxColors: MAX_SURVIVING_ENTRIES,
   shadeMerge: NEIGHBOR_RATIO,
   minCoverage: MIN_COVERAGE,
+  valueSplit: true,
+  lightHueGap: LIGHTING_HUE_GAP,
 };
 
 /** Swatch id → exact sRGB bytes (for repainting survivors). */
@@ -68,6 +75,8 @@ export function quantizeGridColors(grid: VoxelGrid, opts: QuantizeOptions = {}):
   const maxColors = Math.max(1, Math.round(opts.maxColors ?? DEFAULT_QUANTIZE.maxColors));
   const shadeMerge = Math.min(1, Math.max(0, opts.shadeMerge ?? DEFAULT_QUANTIZE.shadeMerge));
   const minCoverage = Math.min(0.2, Math.max(0, opts.minCoverage ?? DEFAULT_QUANTIZE.minCoverage));
+  const valueSplit = opts.valueSplit ?? DEFAULT_QUANTIZE.valueSplit;
+  const hueGap = Math.min(0.45, Math.max(0.02, opts.lightHueGap ?? DEFAULT_QUANTIZE.lightHueGap));
   const colors = grid.colors;
   if (!colors) return null;
   const cells = grid.cells;
@@ -98,6 +107,7 @@ export function quantizeGridColors(grid: VoxelGrid, opts: QuantizeOptions = {}):
   // gray swatch — skin reads as skin-light against brown clothes instead of
   // everything collapsing into "brown".
   for (const [id] of votes) {
+    if (!valueSplit) break;
     if (id === COLOR.Default || id === COLOR.Custom0) continue; // grays are value-true already
     const lightDark = { light: 0, dark: 0 };
     for (let i = 0; i < ids.length; i++) {
@@ -138,7 +148,7 @@ export function quantizeGridColors(grid: VoxelGrid, opts: QuantizeOptions = {}):
         const other = byHue[j]!;
         let dh = Math.abs(hue - swatchHue(other));
         if (dh > 0.5) dh = 1 - dh;
-        if (dh > LIGHTING_HUE_GAP) continue; // far in hue — not its lighting
+        if (dh > hueGap) continue; // far in hue — not its lighting
         const cnt = survivors.get(other)!;
         if (cnt > neighbor || (cnt === neighbor && dh < worst)) { neighbor = cnt; worst = dh; }
       }
